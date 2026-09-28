@@ -1,0 +1,1155 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Globe, Search, AlertCircle, AlertTriangle, CheckCircle2,
+  Download, ExternalLink, ShieldCheck, Zap,
+  BarChart2, FileText, Image as ImageIcon, Link2, Code,
+  Eye, RefreshCw, Layers, Check, Sparkles, Sliders, Smartphone,
+  Monitor, Award, ListFilter, ArrowUpDown, ChevronRight, X,
+  FolderTree, CornerDownRight, CheckCircle, Database, FileSpreadsheet,
+  Settings2, Hash, FileCode, Copy, CheckCheck
+} from 'lucide-react';
+
+export default function App() {
+  const [urlInput, setUrlInput] = useState('https://www.cocoonfurnishings.ca/sitemap.xml');
+  const [crawlMode, setCrawlMode] = useState('sitemap'); // 'site', 'sitemap', 'single'
+  const [maxPages, setMaxPages] = useState(250);
+  const [customPagesInput, setCustomPagesInput] = useState('');
+  const [maxDepth, setMaxDepth] = useState(4);
+  const [loading, setLoading] = useState(false);
+  const [siteData, setSiteData] = useState(null);
+  const [singleData, setSingleData] = useState(null);
+  const [selectedPageModal, setSelectedPageModal] = useState(null);
+  const [modalImgTab, setModalImgTab] = useState('missing'); // 'missing' or 'all'
+  const [error, setError] = useState(null);
+  const [activeTab, setActiveTab] = useState('site-health');
+  const [history, setHistory] = useState([]);
+  const [urlSearchFilter, setUrlSearchFilter] = useState('');
+  const [discoveredSearchFilter, setDiscoveredSearchFilter] = useState('');
+  const [missingAltSearchFilter, setMissingAltSearchFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [expandedIssue, setExpandedIssue] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('seo_audit_history_v2');
+      if (saved) setHistory(JSON.parse(saved));
+    } catch (e) {}
+  }, []);
+
+  const copyText = (text, id) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const effectiveMaxPages = customPagesInput ? parseInt(customPagesInput, 10) || 100 : maxPages;
+
+  const runAudit = async (targetUrl) => {
+    const queryUrl = targetUrl || urlInput;
+    if (!queryUrl) return;
+
+    setLoading(true);
+    setError(null);
+    setSelectedPageModal(null);
+
+    try {
+      if (crawlMode === 'site' || crawlMode === 'sitemap') {
+        const response = await fetch('/api/crawl-site', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: queryUrl,
+            sitemapUrl: crawlMode === 'sitemap' ? queryUrl : undefined,
+            maxPages: effectiveMaxPages,
+            maxDepth
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to complete crawl');
+
+        setSiteData(data);
+        setSingleData(data.pages?.[0] || null);
+        setUrlInput(data.rootUrl);
+
+        const newHistory = [
+          { url: data.rootUrl, domain: data.domain, score: data.siteHealthScore, pages: data.stats.totalPagesCrawled, timestamp: new Date().toLocaleTimeString() },
+          ...history.filter(h => h.url !== data.rootUrl).slice(0, 9)
+        ];
+        setHistory(newHistory);
+        try { localStorage.setItem('seo_audit_history_v2', JSON.stringify(newHistory)); } catch (e) {}
+      } else {
+        const response = await fetch('/api/audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: queryUrl })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to complete single URL audit');
+
+        setSingleData(data);
+        setSiteData(null);
+        setUrlInput(data.url);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportAllPagesCSV = () => {
+    if (!siteData || !siteData.pages) return;
+    const headers = ['URL', 'Status Code', 'Depth', 'Health Score', 'Title', 'Title Length', 'Meta Description', 'H1', 'Word Count', 'Internal Links', 'Missing Alt Count', 'Critical Issues Count'];
+    const rows = siteData.pages.map(p => [
+      `"${p.url}"`,
+      p.statusCode,
+      p.depth,
+      p.score,
+      `"${(p.meta?.title || '').replace(/"/g, '""')}"`,
+      p.meta?.titleLength || 0,
+      `"${(p.meta?.metaDescription || '').replace(/"/g, '""')}"`,
+      `"${(p.headings?.h1?.[0] || '').replace(/"/g, '""')}"`,
+      p.content?.wordCount || 0,
+      p.links?.internalCount || 0,
+      p.images?.missingAlt || 0,
+      p.issues?.filter(i => i.severity === 'Critical').length || 0
+    ]);
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const link = document.createElement('a');
+    link.setAttribute('href', encodeURI(csvContent));
+    link.setAttribute('download', `crawled-pages-${siteData.domain}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportMissingAltCSV = () => {
+    if (!siteData || !siteData.allMissingAltImages) return;
+    const headers = ['Page URL', 'Page Title', 'Image URL', 'Suggested ALT Tag', 'HTML Code Fix'];
+    const rows = siteData.allMissingAltImages.map(img => [
+      `"${img.pageUrl}"`,
+      `"${(img.pageTitle || '').replace(/"/g, '""')}"`,
+      `"${img.imgSrc}"`,
+      `"${(img.suggestedAlt || '').replace(/"/g, '""')}"`,
+      `"${img.htmlSnippet.replace(/"/g, '""')}"`
+    ]);
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const link = document.createElement('a');
+    link.setAttribute('href', encodeURI(csvContent));
+    link.setAttribute('download', `missing-alt-images-${siteData.domain}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportAllDiscoveredUrlsTXT = () => {
+    if (!siteData || !siteData.allDiscoveredUrls) return;
+    const content = siteData.allDiscoveredUrls.map(item => item.url).join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `sitemap-urls-${siteData.domain}-${siteData.allDiscoveredUrls.length}-urls.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const getScoreColor = (val) => {
+    if (val >= 85) return '#10b981';
+    if (val >= 70) return '#6366f1';
+    if (val >= 50) return '#f59e0b';
+    return '#ef4444';
+  };
+
+  const filteredPages = siteData?.pages?.filter(page => {
+    const matchesSearch = page.url.toLowerCase().includes(urlSearchFilter.toLowerCase()) || 
+                          (page.meta?.title || '').toLowerCase().includes(urlSearchFilter.toLowerCase());
+    if (statusFilter === 'all') return matchesSearch;
+    if (statusFilter === 'healthy') return matchesSearch && page.score >= 80;
+    if (statusFilter === 'warnings') return matchesSearch && page.score >= 50 && page.score < 80;
+    if (statusFilter === 'errors') return matchesSearch && (page.score < 50 || page.isBroken);
+    if (statusFilter === 'broken') return matchesSearch && page.statusCode >= 400;
+    return matchesSearch;
+  }) || [];
+
+  const filteredMissingAltImages = siteData?.allMissingAltImages?.filter(img =>
+    img.imgSrc.toLowerCase().includes(missingAltSearchFilter.toLowerCase()) ||
+    img.pageUrl.toLowerCase().includes(missingAltSearchFilter.toLowerCase()) ||
+    img.pageTitle.toLowerCase().includes(missingAltSearchFilter.toLowerCase())
+  ) || [];
+
+  const filteredDiscovered = siteData?.allDiscoveredUrls?.filter(item => 
+    item.url.toLowerCase().includes(discoveredSearchFilter.toLowerCase())
+  ) || [];
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      
+      {/* Top Header */}
+      <header className="no-print" style={{
+        background: 'rgba(10, 13, 20, 0.85)',
+        backdropFilter: 'blur(12px)',
+        borderBottom: '1px solid var(--border-subtle)',
+        position: 'sticky',
+        top: 0,
+        zIndex: 50,
+        padding: '14px 24px'
+      }}>
+        <div style={{ maxWidth: '1440px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '12px',
+              background: 'linear-gradient(135deg, #6366f1 0%, #06b6d4 100%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 0 20px rgba(99, 102, 241, 0.4)'
+            }}>
+              <Globe size={22} color="#ffffff" />
+            </div>
+            <div>
+              <h1 style={{ fontSize: '1.25rem', fontWeight: 800, letterSpacing: '-0.02em', background: 'linear-gradient(to right, #fff, #94a3b8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontFamily: 'var(--font-display)' }}>
+                AHREFS SITE AUDITOR <span style={{ color: 'var(--accent-secondary)', WebkitTextFillColor: 'var(--accent-secondary)' }}>PRO</span>
+              </h1>
+              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500 }}>Technical Crawler & Image ALT Tracking Engine</p>
+            </div>
+          </div>
+
+          {siteData && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button onClick={exportMissingAltCSV} className="btn-secondary" style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171' }} title="Export Missing ALT Images Tracker (CSV)">
+                <ImageIcon size={15} /> Export Missing ALTs ({siteData.allMissingAltImages?.length || 0})
+              </button>
+              <button onClick={exportAllPagesCSV} className="btn-secondary" title="Export Crawled Audit Data (CSV)">
+                <FileSpreadsheet size={15} /> Export Crawled ({siteData.pages.length})
+              </button>
+              <button onClick={() => window.print()} className="btn-primary" style={{ padding: '8px 18px', fontSize: '0.85rem' }}>
+                <FileText size={15} /> Print / PDF
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <main style={{ flex: 1, maxWidth: '1440px', width: '100%', margin: '0 auto', padding: '28px 24px' }}>
+        
+        {/* Search & Mode Switcher */}
+        <section className="no-print" style={{ marginBottom: '28px' }}>
+          <div className="glass-panel" style={{ padding: '24px', background: 'linear-gradient(180deg, rgba(18, 24, 38, 0.95) 0%, rgba(15, 23, 42, 0.8) 100%)' }}>
+            
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => { setCrawlMode('sitemap'); setUrlInput('https://www.cocoonfurnishings.ca/sitemap.xml'); }}
+                className="btn-secondary"
+                style={{
+                  background: crawlMode === 'sitemap' ? 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)' : 'rgba(255, 255, 255, 0.05)',
+                  color: '#fff',
+                  borderColor: crawlMode === 'sitemap' ? 'var(--accent-primary)' : 'var(--border-subtle)'
+                }}
+              >
+                <FileCode size={16} /> Direct Sitemap XML Input (sitemap.xml)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setCrawlMode('site'); setUrlInput('https://www.cocoonfurnishings.ca/'); }}
+                className="btn-secondary"
+                style={{
+                  background: crawlMode === 'site' ? 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)' : 'rgba(255, 255, 255, 0.05)',
+                  color: '#fff',
+                  borderColor: crawlMode === 'site' ? 'var(--accent-primary)' : 'var(--border-subtle)'
+                }}
+              >
+                <FolderTree size={16} /> Website Root Domain Crawler
+              </button>
+              <button
+                type="button"
+                onClick={() => setCrawlMode('single')}
+                className="btn-secondary"
+                style={{
+                  background: crawlMode === 'single' ? 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)' : 'rgba(255, 255, 255, 0.05)',
+                  color: '#fff',
+                  borderColor: crawlMode === 'single' ? 'var(--accent-primary)' : 'var(--border-subtle)'
+                }}
+              >
+                <FileText size={16} /> Single Page Audit
+              </button>
+            </div>
+
+            <form onSubmit={(e) => { e.preventDefault(); runAudit(); }} style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <div style={{ position: 'relative', flex: '1 1 380px' }}>
+                <div style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }}>
+                  {crawlMode === 'sitemap' ? <FileCode size={20} color="var(--accent-secondary)" /> : <Search size={20} />}
+                </div>
+                <input
+                  type="text"
+                  className="input-field"
+                  style={{ paddingLeft: '48px', fontSize: '1.05rem' }}
+                  placeholder={crawlMode === 'sitemap' ? "Enter direct Sitemap URL (e.g. https://www.cocoonfurnishings.ca/sitemap.xml)..." : "Enter website URL (e.g. https://www.cocoonfurnishings.ca/)..."}
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  disabled={loading}
+                />
+              </div>
+
+              {crawlMode !== 'single' && (
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(15, 23, 42, 0.8)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Crawl Scope:</span>
+                    <select
+                      value={customPagesInput ? 'custom' : maxPages}
+                      onChange={(e) => {
+                        if (e.target.value === 'custom') {
+                          setCustomPagesInput('500');
+                        } else {
+                          setCustomPagesInput('');
+                          setMaxPages(Number(e.target.value));
+                        }
+                      }}
+                      style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none', fontSize: '0.85rem', fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      <option value="50" style={{ background: '#121826' }}>50 Pages (Fast)</option>
+                      <option value="100" style={{ background: '#121826' }}>100 Pages</option>
+                      <option value="250" style={{ background: '#121826' }}>250 Pages (Recommended)</option>
+                      <option value="500" style={{ background: '#121826' }}>500 Pages (Deep)</option>
+                      <option value="1000" style={{ background: '#121826' }}>1,000 Pages (Enterprise)</option>
+                      <option value="2500" style={{ background: '#121826' }}>2,500 Pages (Massive Catalog)</option>
+                      <option value="5000" style={{ background: '#121826' }}>5,000 Pages (Full Sitemaps)</option>
+                      <option value="custom" style={{ background: '#121826' }}>Custom Limit...</option>
+                    </select>
+                  </div>
+
+                  {customPagesInput !== '' && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(15, 23, 42, 0.8)', padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--accent-primary)' }}>
+                      <Hash size={14} color="var(--accent-secondary)" />
+                      <input
+                        type="number"
+                        min="10"
+                        max="10000"
+                        value={customPagesInput}
+                        onChange={(e) => setCustomPagesInput(e.target.value)}
+                        placeholder="e.g. 4023"
+                        style={{ width: '80px', background: 'transparent', border: 'none', color: '#fff', outline: 'none', fontSize: '0.85rem', fontWeight: 600 }}
+                      />
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>pages</span>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(15, 23, 42, 0.8)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Depth:</span>
+                    <select
+                      value={maxDepth}
+                      onChange={(e) => setMaxDepth(Number(e.target.value))}
+                      style={{ background: 'transparent', border: 'none', color: '#fff', outline: 'none', fontSize: '0.85rem', fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      <option value="2" style={{ background: '#121826' }}>Depth 2</option>
+                      <option value="3" style={{ background: '#121826' }}>Depth 3</option>
+                      <option value="4" style={{ background: '#121826' }}>Depth 4</option>
+                      <option value="5" style={{ background: '#121826' }}>Depth 5</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={loading || !urlInput.trim()}
+                style={{ padding: '14px 28px', fontSize: '1rem', minWidth: '190px' }}
+              >
+                {loading ? (
+                  <>
+                    <RefreshCw size={18} style={{ animation: 'spin 1s linear infinite' }} />
+                    Crawling ({effectiveMaxPages} Max)...
+                  </>
+                ) : (
+                  <>
+                    <Zap size={18} />
+                    {crawlMode === 'sitemap' ? `Crawl Sitemap (${effectiveMaxPages} Pages)` : crawlMode === 'site' ? `Start Crawl (${effectiveMaxPages} Pages)` : 'Run Single Audit'}
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        </section>
+
+        {/* Error Notification */}
+        {error && (
+          <div className="glass-panel" style={{ padding: '20px', borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.1)', marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <AlertCircle size={28} color="#ef4444" />
+            <div>
+              <h4 style={{ color: '#f87171', fontWeight: 600 }}>Crawl & Audit Error</h4>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '2px' }}>{error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Loading Crawl Screen */}
+        {loading && (
+          <div className="glass-panel animate-fade-in" style={{ padding: '60px 40px', textAlign: 'center', margin: '40px 0' }}>
+            <div style={{
+              width: '70px',
+              height: '70px',
+              borderRadius: '50%',
+              border: '4px solid rgba(99, 102, 241, 0.2)',
+              borderTopColor: 'var(--accent-primary)',
+              margin: '0 auto 24px',
+              animation: 'spin 1s linear infinite'
+            }} />
+            <h3 style={{ fontSize: '1.4rem', fontWeight: 700, fontFamily: 'var(--font-display)', marginBottom: '8px' }}>
+              Parsing Sitemap & Auditing Images on <span style={{ color: 'var(--accent-secondary)' }}>{urlInput}</span>
+            </h3>
+            <p style={{ color: 'var(--text-muted)', maxWidth: '640px', margin: '0 auto', fontSize: '0.95rem' }}>
+              Extracting all image URLs, checking alt attributes, generating AI-suggested alt tags, and compiling comprehensive technical SEO diagnostics...
+            </p>
+          </div>
+        )}
+
+        {/* FULL SITE AUDIT RESULTS */}
+        {siteData && !loading && (
+          <div className="animate-fade-in">
+            
+            {/* Top Site Health Hero Card */}
+            <div className="glass-panel glass-panel-glow" style={{ padding: '32px', marginBottom: '28px', background: 'radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.15), rgba(18, 24, 38, 0.95) 70%)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '32px', alignItems: 'center' }}>
+                
+                {/* Site Health Gauge */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+                  <div style={{ position: 'relative', width: '130px', height: '130px', flexShrink: 0 }}>
+                    <svg style={{ width: '100%', height: '100%', transform: 'rotate(-90deg)' }} viewBox="0 0 36 36">
+                      <path
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                        fill="none"
+                        stroke="rgba(255, 255, 255, 0.08)"
+                        strokeWidth="3.2"
+                      />
+                      <path
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                        fill="none"
+                        stroke={getScoreColor(siteData.siteHealthScore)}
+                        strokeWidth="3.2"
+                        strokeDasharray={`${siteData.siteHealthScore}, 100`}
+                        strokeLinecap="round"
+                        style={{ transition: 'stroke-dasharray 1s ease' }}
+                      />
+                    </svg>
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                      <span style={{ fontSize: '2.2rem', fontWeight: 800, fontFamily: 'var(--font-display)', lineHeight: 1 }}>
+                        {siteData.siteHealthScore}%
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: '2px' }}>
+                        Health Score
+                      </span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                      <span className={`badge ${siteData.siteHealthScore >= 80 ? 'badge-passed' : siteData.siteHealthScore >= 60 ? 'badge-warning' : 'badge-critical'}`} style={{ fontSize: '0.85rem', padding: '4px 12px' }}>
+                        Grade: {siteData.siteGrade}
+                      </span>
+                      <span style={{ fontSize: '0.82rem', color: 'var(--text-dim)' }}>{siteData.stats.totalPagesCrawled} Pages Audited</span>
+                    </div>
+                    <h2 style={{ fontSize: '1.5rem', fontWeight: 700, fontFamily: 'var(--font-display)', wordBreak: 'break-all' }}>
+                      {siteData.domain}
+                    </h2>
+                    <a href={siteData.sitemapSourceUrl || siteData.rootUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.82rem', color: 'var(--accent-secondary)', display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none', marginTop: '4px' }}>
+                      {siteData.sitemapSourceUrl || siteData.rootUrl} <ExternalLink size={13} />
+                    </a>
+                  </div>
+                </div>
+
+                {/* Tracking Counters */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
+                  <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f87171', fontFamily: 'var(--font-display)' }}>
+                      {siteData.stats.totalMissingAltImages || 0}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Missing Alt Images</div>
+                  </div>
+
+                  <div style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.25)', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#fbbf24', fontFamily: 'var(--font-display)' }}>
+                      {siteData.stats.warningPages}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Pages w/ Warnings</div>
+                  </div>
+
+                  <div style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#34d399', fontFamily: 'var(--font-display)' }}>
+                      {siteData.stats.healthyPages}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Healthy Pages</div>
+                  </div>
+                </div>
+
+                {/* Summary list */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: 'rgba(15, 23, 42, 0.8)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px' }}>Inventory Tracking:</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                    <span style={{ color: '#c084fc' }}>● Total Discovered URLs</span>
+                    <span style={{ fontWeight: 700 }}>{siteData.stats.totalDiscoveredUrls.toLocaleString()}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                    <span style={{ color: '#38bdf8' }}>● XML Sitemap URLs</span>
+                    <span style={{ fontWeight: 700 }}>{siteData.stats.sitemapUrlsFound.toLocaleString()}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                    <span style={{ color: '#f87171' }}>● Missing ALT Images</span>
+                    <span style={{ fontWeight: 700 }}>{siteData.stats.totalMissingAltImages.toLocaleString()}</span>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="no-print" style={{ display: 'flex', borderBottom: '1px solid var(--border-subtle)', marginBottom: '24px', overflowX: 'auto', gap: '4px' }}>
+              {[
+                { id: 'site-health', label: 'Crawled Pages Explorer', icon: Database, count: siteData.pages.length },
+                { id: 'missing-alts', label: 'Missing Image ALTs Tracking', icon: ImageIcon, count: siteData.allMissingAltImages?.length || 0 },
+                { id: 'discovered-urls', label: 'All Discovered Sitemap URLs', icon: Link2, count: siteData.allDiscoveredUrls.length },
+                { id: 'site-issues', label: 'Site-Wide Issues & Bulk Fixes', icon: AlertTriangle, count: siteData.aggregateIssues.length },
+                { id: 'ahrefs-metrics', label: 'Ahrefs Domain Authority', icon: Award }
+              ].map((tab) => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    className={`tab-btn ${isActive ? 'active' : ''}`}
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    <Icon size={16} />
+                    {tab.label}
+                    {tab.count !== undefined && (
+                      <span style={{
+                        background: tab.id === 'missing-alts' ? 'rgba(239, 68, 68, 0.2)' : isActive ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.08)',
+                        color: tab.id === 'missing-alts' ? '#f87171' : isActive ? 'var(--accent-primary)' : 'var(--text-muted)',
+                        padding: '1px 6px',
+                        borderRadius: '10px',
+                        fontSize: '0.72rem',
+                        fontWeight: 700
+                      }}>
+                        {tab.count.toLocaleString()}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* TAB: Missing Image ALTs Tracking (Site-Wide) */}
+            {activeTab === 'missing-alts' && (
+              <div className="animate-fade-in glass-panel" style={{ padding: '24px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <ImageIcon size={20} color="#f87171" /> Missing Image ALT Attributes Tracking ({siteData.allMissingAltImages?.length || 0})
+                    </h3>
+                    <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Exact image URLs, previews, source pages, and suggested replacement ALT text across the crawled pages
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <div style={{ position: 'relative', width: '280px' }}>
+                      <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                      <input
+                        type="text"
+                        className="input-field"
+                        style={{ padding: '8px 12px 8px 36px', fontSize: '0.85rem' }}
+                        placeholder="Search image or page title..."
+                        value={missingAltSearchFilter}
+                        onChange={(e) => setMissingAltSearchFilter(e.target.value)}
+                      />
+                    </div>
+                    <button onClick={exportMissingAltCSV} className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.85rem', background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)' }}>
+                      <Download size={14} /> Export Missing ALTs (CSV)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="table-container" style={{ maxHeight: '600px' }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '80px' }}>Preview</th>
+                        <th>Image File URL & Path</th>
+                        <th>Found on Page (Title & URL)</th>
+                        <th>Suggested ALT Fix</th>
+                        <th style={{ width: '120px' }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredMissingAltImages.map((img, i) => (
+                        <tr key={i}>
+                          <td>
+                            <div style={{ width: '56px', height: '56px', borderRadius: '8px', overflow: 'hidden', background: '#0f172a', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <img
+                                src={img.imgSrc}
+                                alt={img.suggestedAlt}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                              />
+                            </div>
+                          </td>
+                          <td style={{ maxWidth: '300px' }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.82rem', color: 'var(--accent-secondary)', wordBreak: 'break-all' }}>
+                              {img.imgSrc.split('/').pop()}
+                            </div>
+                            <a href={img.imgSrc} target="_blank" rel="noreferrer" style={{ fontSize: '0.74rem', color: 'var(--text-dim)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '3px', marginTop: '2px' }}>
+                              Open Full Image <ExternalLink size={10} />
+                            </a>
+                          </td>
+                          <td style={{ maxWidth: '320px' }}>
+                            <div style={{ fontWeight: 600, color: '#fff', fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {img.pageTitle || '[Page Title]'}
+                            </div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '2px' }}>
+                              {img.pageUrl}
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ background: 'rgba(15, 23, 42, 0.8)', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-subtle)', fontSize: '0.82rem', color: '#34d399', fontWeight: 600 }}>
+                              "{img.suggestedAlt}"
+                            </div>
+                          </td>
+                          <td>
+                            <button
+                              onClick={() => copyText(img.htmlSnippet, `site-${i}`)}
+                              className="btn-secondary"
+                              style={{ padding: '6px 10px', fontSize: '0.75rem', width: '100%', justifyContent: 'center' }}
+                            >
+                              {copiedId === `site-${i}` ? <><CheckCheck size={13} color="#10b981" /> Copied</> : <><Copy size={13} /> Copy HTML</>}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 1: Crawled Pages Table */}
+            {activeTab === 'site-health' && (
+              <div className="animate-fade-in">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {['all', 'healthy', 'warnings', 'errors', 'broken'].map(f => (
+                      <button
+                        key={f}
+                        onClick={() => setStatusFilter(f)}
+                        className="btn-secondary"
+                        style={{
+                          background: statusFilter === f ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                          borderColor: statusFilter === f ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                          color: statusFilter === f ? '#fff' : 'var(--text-muted)',
+                          padding: '6px 12px',
+                          fontSize: '0.8rem',
+                          textTransform: 'capitalize'
+                        }}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ position: 'relative', width: '320px' }}>
+                    <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                    <input
+                      type="text"
+                      className="input-field"
+                      style={{ padding: '8px 12px 8px 36px', fontSize: '0.85rem' }}
+                      placeholder="Filter crawled pages by URL/title..."
+                      value={urlSearchFilter}
+                      onChange={(e) => setUrlSearchFilter(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="table-container" style={{ maxHeight: '600px' }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Page URL & Title</th>
+                        <th>Status</th>
+                        <th>Depth</th>
+                        <th>Health</th>
+                        <th>H1 Tag</th>
+                        <th>Words</th>
+                        <th>Missing Alt</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredPages.map((page, i) => (
+                        <tr key={i} style={{ cursor: 'pointer' }} onClick={() => setSelectedPageModal(page)}>
+                          <td style={{ maxWidth: '420px' }}>
+                            <div style={{ fontWeight: 600, color: '#fff', fontSize: '0.88rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {page.meta?.title || <span style={{ color: 'var(--text-dim)' }}>[No Title]</span>}
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: 'var(--accent-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '2px' }}>
+                              {page.url}
+                            </div>
+                          </td>
+                          <td>
+                            <span className={`badge ${page.statusCode === 200 ? 'badge-passed' : page.statusCode >= 300 && page.statusCode < 400 ? 'badge-info' : 'badge-critical'}`}>
+                              {page.statusCode}
+                            </span>
+                          </td>
+                          <td>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Level {page.depth}</span>
+                          </td>
+                          <td>
+                            <span style={{ fontWeight: 700, color: getScoreColor(page.score) }}>
+                              {page.score}%
+                            </span>
+                          </td>
+                          <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem' }}>
+                            {page.headings?.h1?.[0] || <span style={{ color: '#ef4444' }}>Missing H1</span>}
+                          </td>
+                          <td style={{ fontSize: '0.8rem' }}>{page.content?.wordCount?.toLocaleString() || 0}</td>
+                          <td>
+                            {page.images?.missingAlt > 0 ? (
+                              <span className="badge badge-critical" style={{ fontSize: '0.75rem' }}>{page.images.missingAlt} Missing</span>
+                            ) : (
+                              <span className="badge badge-passed" style={{ fontSize: '0.75rem' }}>0</span>
+                            )}
+                          </td>
+                          <td>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setSelectedPageModal(page); }}
+                              className="btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                            >
+                              Inspect Images & ALTs <ChevronRight size={13} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB: All Discovered Sitemap URLs */}
+            {activeTab === 'discovered-urls' && (
+              <div className="animate-fade-in glass-panel" style={{ padding: '24px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: 700 }}>
+                      Complete Discovered URLs Inventory ({siteData.allDiscoveredUrls.length.toLocaleString()})
+                    </h3>
+                    <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                      Every single URL discovered from XML Sitemaps and internal hyperlink crawling on {siteData.domain}
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <div style={{ position: 'relative', width: '280px' }}>
+                      <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                      <input
+                        type="text"
+                        className="input-field"
+                        style={{ padding: '8px 12px 8px 36px', fontSize: '0.85rem' }}
+                        placeholder="Search across all URLs..."
+                        value={discoveredSearchFilter}
+                        onChange={(e) => setDiscoveredSearchFilter(e.target.value)}
+                      />
+                    </div>
+                    <button onClick={exportAllDiscoveredUrlsTXT} className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.85rem' }}>
+                      <Download size={14} /> Download All URLs (TXT)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="table-container" style={{ maxHeight: '550px' }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>URL</th>
+                        <th>Source</th>
+                        <th>Crawl Status</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredDiscovered.slice(0, 1500).map((item, i) => (
+                        <tr key={i}>
+                          <td style={{ color: 'var(--text-dim)', fontSize: '0.75rem', width: '50px' }}>{i + 1}</td>
+                          <td style={{ color: 'var(--accent-secondary)', wordBreak: 'break-all', fontSize: '0.85rem' }}>
+                            {item.url}
+                          </td>
+                          <td>
+                            {item.fromSitemap ? (
+                              <span className="badge badge-info">Sitemap.xml</span>
+                            ) : (
+                              <span className="badge badge-warning">Hyperlink</span>
+                            )}
+                          </td>
+                          <td>
+                            {item.isCrawled ? (
+                              <span className="badge badge-passed">Audited</span>
+                            ) : (
+                              <span style={{ color: 'var(--text-dim)', fontSize: '0.78rem' }}>Discovered / Queued</span>
+                            )}
+                          </td>
+                          <td>
+                            <a href={item.url} target="_blank" rel="noreferrer" className="btn-secondary" style={{ padding: '4px 8px', fontSize: '0.75rem', textDecoration: 'none' }}>
+                              Visit <ExternalLink size={12} />
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB: Site-Wide Aggregate Issues */}
+            {activeTab === 'site-issues' && (
+              <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {siteData.aggregateIssues.map((issue, idx) => {
+                  const isExpanded = expandedIssue === idx;
+                  return (
+                    <div
+                      key={idx}
+                      className="glass-panel"
+                      style={{
+                        padding: '20px',
+                        borderLeft: `4px solid ${issue.severity === 'Critical' ? '#ef4444' : issue.severity === 'Warning' ? '#f59e0b' : '#10b981'}`
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setExpandedIssue(isExpanded ? null : idx)}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                            <span className={`badge ${issue.severity === 'Critical' ? 'badge-critical' : issue.severity === 'Warning' ? 'badge-warning' : 'badge-passed'}`}>
+                              {issue.severity}
+                            </span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase' }}>
+                              {issue.category}
+                            </span>
+                            <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
+                              Affects {issue.affectedUrls.length} Page(s)
+                            </span>
+                          </div>
+                          <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>
+                            {issue.title}
+                          </h3>
+                          <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                            {issue.description}
+                          </p>
+                        </div>
+                        <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '0.8rem' }}>
+                          {isExpanded ? 'Hide Details' : `View ${issue.affectedUrls.length} Pages`}
+                        </button>
+                      </div>
+
+                      {isExpanded && (
+                        <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+                          <div style={{ padding: '10px 14px', background: 'rgba(15, 23, 42, 0.8)', borderRadius: '8px', marginBottom: '12px', fontSize: '0.85rem' }}>
+                            <span style={{ color: 'var(--accent-secondary)', fontWeight: 600 }}>Action: </span>
+                            {issue.recommendation}
+                          </div>
+
+                          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Affected Page List:</div>
+                          <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {issue.affectedUrls.map((affUrl, uIdx) => (
+                              <div
+                                key={uIdx}
+                                onClick={() => {
+                                  const targetP = siteData.pages.find(p => p.url === affUrl);
+                                  if (targetP) setSelectedPageModal(targetP);
+                                }}
+                                style={{
+                                  padding: '8px 12px',
+                                  background: 'rgba(255, 255, 255, 0.03)',
+                                  borderRadius: '6px',
+                                  fontSize: '0.82rem',
+                                  color: 'var(--accent-secondary)',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}
+                              >
+                                <span>{affUrl}</span>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Inspect Images &rarr;</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* TAB: Ahrefs Domain Authority */}
+            {activeTab === 'ahrefs-metrics' && (
+              <div className="animate-fade-in glass-panel" style={{ padding: '32px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.3rem', fontWeight: 800, fontFamily: 'var(--font-display)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <Award size={22} color="#06b6d4" /> Ahrefs Domain & Authority Intelligence
+                    </h3>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Estimated backlink profile and domain authority telemetry for {siteData.domain}</p>
+                  </div>
+                  <span className="badge badge-info">{siteData.domainMetrics.source}</span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+                  <div style={{ background: 'rgba(15, 23, 42, 0.9)', padding: '24px', borderRadius: '14px', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Domain Rating (DR)</div>
+                    <div style={{ fontSize: '2.8rem', fontWeight: 900, color: '#06b6d4', fontFamily: 'var(--font-display)', margin: '8px 0' }}>
+                      {siteData.domainMetrics.domainRating}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>0-100 Logarithmic Scale</div>
+                  </div>
+
+                  <div style={{ background: 'rgba(15, 23, 42, 0.9)', padding: '24px', borderRadius: '14px', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Backlinks</div>
+                    <div style={{ fontSize: '2.8rem', fontWeight: 900, color: '#a855f7', fontFamily: 'var(--font-display)', margin: '8px 0' }}>
+                      {siteData.domainMetrics.backlinks.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Inbound Hyperlinks</div>
+                  </div>
+
+                  <div style={{ background: 'rgba(15, 23, 42, 0.9)', padding: '24px', borderRadius: '14px', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Referring Domains</div>
+                    <div style={{ fontSize: '2.8rem', fontWeight: 900, color: '#10b981', fontFamily: 'var(--font-display)', margin: '8px 0' }}>
+                      {siteData.domainMetrics.referringDomains.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Unique Root Domains</div>
+                  </div>
+
+                  <div style={{ background: 'rgba(15, 23, 42, 0.9)', padding: '24px', borderRadius: '14px', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Monthly Organic Traffic</div>
+                    <div style={{ fontSize: '2.8rem', fontWeight: 900, color: '#f59e0b', fontFamily: 'var(--font-display)', margin: '8px 0' }}>
+                      ~{siteData.domainMetrics.organicTraffic.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Estimated Search Visits</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </div>
+        )}
+
+        {/* DETAILED PAGE INSPECTION MODAL WITH IMAGE ALT TRACKER */}
+        {selectedPageModal && (
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px'
+          }}>
+            <div className="glass-panel" style={{
+              maxWidth: '1020px',
+              width: '100%',
+              maxHeight: '88vh',
+              overflowY: 'auto',
+              padding: '28px',
+              background: '#0f172a',
+              border: '1px solid var(--border-focus)'
+            }}>
+              {/* Modal Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                    <span className={`badge ${selectedPageModal.score >= 80 ? 'badge-passed' : selectedPageModal.score >= 60 ? 'badge-warning' : 'badge-critical'}`}>
+                      Score: {selectedPageModal.score}%
+                    </span>
+                    <span className="badge badge-info">HTTP {selectedPageModal.statusCode}</span>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>Crawl Depth: Level {selectedPageModal.depth}</span>
+                  </div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '4px' }}>{selectedPageModal.meta?.title || '[No Title]'}</h3>
+                  <a href={selectedPageModal.url} target="_blank" rel="noreferrer" style={{ fontSize: '0.85rem', color: 'var(--accent-secondary)', textDecoration: 'none' }}>
+                    {selectedPageModal.url}
+                  </a>
+                </div>
+                <button onClick={() => setSelectedPageModal(null)} className="btn-secondary" style={{ padding: '6px' }}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Page Overview Metrics */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Meta Description ({selectedPageModal.meta?.metaDescriptionLength || 0} chars)</div>
+                  <div style={{ fontSize: '0.85rem', marginTop: '2px' }}>{selectedPageModal.meta?.metaDescription || <span style={{ color: '#ef4444' }}>Missing</span>}</div>
+                </div>
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>H1 Heading</div>
+                  <div style={{ fontSize: '0.85rem', marginTop: '2px' }}>{selectedPageModal.headings?.h1?.[0] || <span style={{ color: '#ef4444' }}>Missing H1</span>}</div>
+                </div>
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Canonical URL</div>
+                  <div style={{ fontSize: '0.85rem', marginTop: '2px', wordBreak: 'break-all' }}>{selectedPageModal.meta?.canonicalUrl || <span style={{ color: '#f59e0b' }}>None</span>}</div>
+                </div>
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Word Count & Size</div>
+                  <div style={{ fontSize: '0.85rem', marginTop: '2px' }}>{selectedPageModal.content?.wordCount} words ({selectedPageModal.content?.htmlSizeKb} KB)</div>
+                </div>
+              </div>
+
+              {/* DETAILED IMAGE ALT TRACKING SECTION */}
+              <div style={{ background: 'rgba(15, 23, 42, 0.95)', borderRadius: '12px', border: '1px solid var(--border-subtle)', padding: '20px', marginBottom: '20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <ImageIcon size={18} color="var(--accent-secondary)" />
+                    <h4 style={{ fontSize: '1rem', fontWeight: 700 }}>Image Audit & Exact ALT Tracker</h4>
+                  </div>
+                  
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => setModalImgTab('missing')}
+                      className="btn-secondary"
+                      style={{
+                        padding: '4px 12px',
+                        fontSize: '0.78rem',
+                        background: modalImgTab === 'missing' ? 'rgba(239, 68, 68, 0.25)' : 'transparent',
+                        borderColor: modalImgTab === 'missing' ? '#ef4444' : 'var(--border-subtle)',
+                        color: modalImgTab === 'missing' ? '#f87171' : 'var(--text-muted)'
+                      }}
+                    >
+                      Missing Alt ({selectedPageModal.images?.missingAlt || 0})
+                    </button>
+                    <button
+                      onClick={() => setModalImgTab('all')}
+                      className="btn-secondary"
+                      style={{
+                        padding: '4px 12px',
+                        fontSize: '0.78rem',
+                        background: modalImgTab === 'all' ? 'rgba(99, 102, 241, 0.25)' : 'transparent',
+                        borderColor: modalImgTab === 'all' ? 'var(--accent-primary)' : 'var(--border-subtle)',
+                        color: modalImgTab === 'all' ? '#fff' : 'var(--text-muted)'
+                      }}
+                    >
+                      All Images ({selectedPageModal.images?.list?.length || 0})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Images List */}
+                <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {(modalImgTab === 'missing' ? selectedPageModal.images?.missingAltList : selectedPageModal.images?.list)?.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '20px', color: 'var(--accent-emerald)', fontSize: '0.85rem' }}>
+                      <CheckCircle2 size={24} style={{ margin: '0 auto 6px' }} />
+                      All images on this page have descriptive ALT tags!
+                    </div>
+                  ) : (
+                    (modalImgTab === 'missing' ? selectedPageModal.images?.missingAltList : selectedPageModal.images?.list)?.map((img, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '14px',
+                          padding: '12px',
+                          background: 'rgba(255, 255, 255, 0.03)',
+                          borderRadius: '8px',
+                          border: '1px solid ' + (img.hasAlt ? 'var(--border-subtle)' : 'rgba(239, 68, 68, 0.3)')
+                        }}
+                      >
+                        {/* Thumbnail */}
+                        <div style={{ width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', background: '#0a0d14', border: '1px solid var(--border-subtle)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <img
+                            src={img.src}
+                            alt={img.alt || img.suggestedAlt}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                          />
+                        </div>
+
+                        {/* Image details */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                            {img.hasAlt ? (
+                              <span className="badge badge-passed" style={{ fontSize: '0.7rem' }}>ALT: "{img.alt}"</span>
+                            ) : (
+                              <span className="badge badge-critical" style={{ fontSize: '0.7rem' }}>Missing ALT Attribute</span>
+                            )}
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Image #{img.index || idx + 1}</span>
+                          </div>
+
+                          <div style={{ fontSize: '0.82rem', color: 'var(--accent-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {img.src}
+                          </div>
+
+                          {!img.hasAlt && (
+                            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                              <span style={{ color: '#34d399', fontWeight: 600 }}>Suggested ALT: </span>"{img.suggestedAlt}"
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Actions */}
+                        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                          <a
+                            href={img.src}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="btn-secondary"
+                            style={{ padding: '6px 8px', fontSize: '0.75rem', textDecoration: 'none' }}
+                            title="Open image in new tab"
+                          >
+                            <ExternalLink size={13} />
+                          </a>
+                          <button
+                            onClick={() => copyText(img.htmlSnippet, `modal-${idx}`)}
+                            className="btn-secondary"
+                            style={{ padding: '6px 10px', fontSize: '0.75rem' }}
+                            title="Copy complete <img> tag with suggested ALT text"
+                          >
+                            {copiedId === `modal-${idx}` ? <CheckCheck size={13} color="#10b981" /> : <Copy size={13} />}
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Other Issues on this URL */}
+              <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '10px' }}>Other Technical Issues on this URL:</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {(selectedPageModal.issues || []).map((iss, i) => (
+                  <div key={i} style={{ padding: '10px 14px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <span className={`badge ${iss.severity === 'Critical' ? 'badge-critical' : iss.severity === 'Warning' ? 'badge-warning' : 'badge-passed'}`}>{iss.severity}</span>
+                      <span style={{ fontWeight: 600, fontSize: '0.88rem' }}>{iss.title}</span>
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>{iss.description}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+      </main>
+
+      {/* Footer */}
+      <footer className="no-print" style={{ borderTop: '1px solid var(--border-subtle)', padding: '24px', textAlign: 'center', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+        Ahrefs Site Auditor Pro &bull; Direct XML Sitemap & Image ALT Tracking Intelligence Suite
+      </footer>
+    </div>
+  );
+}
