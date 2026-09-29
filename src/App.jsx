@@ -96,6 +96,8 @@ export default function App() {
       const es = new EventSource(sseUrl);
       eventSourceRef.current = es;
 
+      let isCompleted = false;
+
       es.addEventListener('progress', (e) => {
         try {
           const data = JSON.parse(e.data);
@@ -114,6 +116,7 @@ export default function App() {
       });
 
       es.addEventListener('complete', (e) => {
+        isCompleted = true;
         try {
           const finalReport = JSON.parse(e.data);
           setSiteData(finalReport);
@@ -134,20 +137,54 @@ export default function App() {
         }
       });
 
-      es.addEventListener('error', (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          setError(data.message || 'Crawl stream error');
-        } catch (err) {
-          setError('Failed to connect to real-time crawler stream.');
+      es.addEventListener('error', async (e) => {
+        if (isCompleted) return;
+        
+        let serverErrMsg = '';
+        if (e.data) {
+          try {
+            const data = JSON.parse(e.data);
+            serverErrMsg = data.message;
+          } catch (err) {}
         }
-        setLoading(false);
+
+        if (serverErrMsg) {
+          setError(serverErrMsg);
+          setLoading(false);
+          es.close();
+          return;
+        }
+
+        // If SSE connection dropped or proxy failed, fallback seamlessly to POST /api/crawl-site
+        console.warn('SSE stream interrupted or disconnected, attempting fallback to direct crawl API...');
         es.close();
+        try {
+          const fallbackRes = await fetch('/api/crawl-site', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url: queryUrl,
+              sitemapUrl: crawlMode === 'sitemap' ? queryUrl : undefined,
+              maxPages: effectiveMaxPages,
+              maxDepth
+            })
+          });
+          const fallbackData = await fallbackRes.json();
+          if (!fallbackRes.ok) throw new Error(fallbackData.error || 'Crawling failed');
+          
+          setSiteData(fallbackData);
+          setSingleData(fallbackData.pages?.[0] || null);
+          setUrlInput(fallbackData.rootUrl);
+        } catch (fbErr) {
+          setError(fbErr.message || 'Failed to connect to crawler stream.');
+        } finally {
+          setLoading(false);
+        }
       });
 
-      es.onerror = () => {
-        setLoading(false);
-        es.close();
+      es.onerror = (e) => {
+        if (isCompleted) return;
+        // Native browser event error triggers addEventListener('error')
       };
     } else {
       // Single Page Audit mode

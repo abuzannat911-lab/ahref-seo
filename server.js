@@ -604,13 +604,23 @@ app.get('/api/crawl-stream', async (req, res) => {
   // Setup SSE Headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
+    'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
     'Access-Control-Allow-Origin': '*'
+  });
+  if (res.flushHeaders) res.flushHeaders();
+
+  let isClientConnected = true;
+  req.on('close', () => {
+    isClientConnected = false;
   });
 
   const sendEvent = (type, data) => {
-    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+    if (!isClientConnected) return;
+    try {
+      res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (e) {}
   };
 
   const logMessage = (level, message, details = null) => {
