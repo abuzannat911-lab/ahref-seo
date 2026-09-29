@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Globe, Search, AlertCircle, AlertTriangle, CheckCircle2,
   Download, ExternalLink, ShieldCheck, Zap,
@@ -6,7 +6,8 @@ import {
   Eye, RefreshCw, Layers, Check, Sparkles, Sliders, Smartphone,
   Monitor, Award, ListFilter, ArrowUpDown, ChevronRight, X,
   FolderTree, CornerDownRight, CheckCircle, Database, FileSpreadsheet,
-  Settings2, Hash, FileCode, Copy, CheckCheck
+  Settings2, Hash, FileCode, Copy, CheckCheck, Terminal,
+  Radio, Play, Square, Pause, ChevronDown, ChevronUp, Cpu
 } from 'lucide-react';
 
 export default function App() {
@@ -30,12 +31,35 @@ export default function App() {
   const [expandedIssue, setExpandedIssue] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
 
+  // Live AJAX / SSE Progress & Log State
+  const [progressState, setProgressState] = useState({
+    percent: 0,
+    currentCrawled: 0,
+    targetLimit: 250,
+    totalDiscovered: 0,
+    currentUrl: '',
+    activeWorkers: 0
+  });
+  const [crawlLogs, setCrawlLogs] = useState([]);
+  const [logFilter, setLogFilter] = useState('all'); // 'all', 'error', 'success'
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [consoleOpen, setConsoleOpen] = useState(true);
+  const logContainerRef = useRef(null);
+  const eventSourceRef = useRef(null);
+
   useEffect(() => {
     try {
       const saved = localStorage.getItem('seo_audit_history_v2');
       if (saved) setHistory(JSON.parse(saved));
     } catch (e) {}
   }, []);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    if (autoScroll && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [crawlLogs, autoScroll]);
 
   const copyText = (text, id) => {
     navigator.clipboard.writeText(text);
@@ -49,36 +73,85 @@ export default function App() {
     const queryUrl = targetUrl || urlInput;
     if (!queryUrl) return;
 
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
     setLoading(true);
     setError(null);
     setSelectedPageModal(null);
+    setCrawlLogs([]);
+    setProgressState({
+      percent: 0,
+      currentCrawled: 0,
+      targetLimit: effectiveMaxPages,
+      totalDiscovered: 0,
+      currentUrl: queryUrl,
+      activeWorkers: 15
+    });
 
-    try {
-      if (crawlMode === 'site' || crawlMode === 'sitemap') {
-        const response = await fetch('/api/crawl-site', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: queryUrl,
-            sitemapUrl: crawlMode === 'sitemap' ? queryUrl : undefined,
-            maxPages: effectiveMaxPages,
-            maxDepth
-          })
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Failed to complete crawl');
+    if (crawlMode === 'site' || crawlMode === 'sitemap') {
+      // Connect to Server-Sent Events (SSE) Streaming API for Real-Time AJAX Progress & Live Logs
+      const sseUrl = `/api/crawl-stream?url=${encodeURIComponent(queryUrl)}&sitemapUrl=${crawlMode === 'sitemap' ? encodeURIComponent(queryUrl) : ''}&maxPages=${effectiveMaxPages}&maxDepth=${maxDepth}`;
+      const es = new EventSource(sseUrl);
+      eventSourceRef.current = es;
 
-        setSiteData(data);
-        setSingleData(data.pages?.[0] || null);
-        setUrlInput(data.rootUrl);
+      es.addEventListener('progress', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          setProgressState(prev => ({
+            ...prev,
+            ...data
+          }));
+        } catch (err) {}
+      });
 
-        const newHistory = [
-          { url: data.rootUrl, domain: data.domain, score: data.siteHealthScore, pages: data.stats.totalPagesCrawled, timestamp: new Date().toLocaleTimeString() },
-          ...history.filter(h => h.url !== data.rootUrl).slice(0, 9)
-        ];
-        setHistory(newHistory);
-        try { localStorage.setItem('seo_audit_history_v2', JSON.stringify(newHistory)); } catch (e) {}
-      } else {
+      es.addEventListener('log', (e) => {
+        try {
+          const logItem = JSON.parse(e.data);
+          setCrawlLogs(prev => [...prev.slice(-300), logItem]);
+        } catch (err) {}
+      });
+
+      es.addEventListener('complete', (e) => {
+        try {
+          const finalReport = JSON.parse(e.data);
+          setSiteData(finalReport);
+          setSingleData(finalReport.pages?.[0] || null);
+          setUrlInput(finalReport.rootUrl);
+
+          const newHistory = [
+            { url: finalReport.rootUrl, domain: finalReport.domain, score: finalReport.siteHealthScore, pages: finalReport.stats.totalPagesCrawled, timestamp: new Date().toLocaleTimeString() },
+            ...history.filter(h => h.url !== finalReport.rootUrl).slice(0, 9)
+          ];
+          setHistory(newHistory);
+          try { localStorage.setItem('seo_audit_history_v2', JSON.stringify(newHistory)); } catch (err) {}
+        } catch (err) {
+          console.error(err);
+        } finally {
+          setLoading(false);
+          es.close();
+        }
+      });
+
+      es.addEventListener('error', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          setError(data.message || 'Crawl stream error');
+        } catch (err) {
+          setError('Failed to connect to real-time crawler stream.');
+        }
+        setLoading(false);
+        es.close();
+      });
+
+      es.onerror = () => {
+        setLoading(false);
+        es.close();
+      };
+    } else {
+      // Single Page Audit mode
+      try {
         const response = await fetch('/api/audit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -90,11 +163,11 @@ export default function App() {
         setSingleData(data);
         setSiteData(null);
         setUrlInput(data.url);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -183,6 +256,13 @@ export default function App() {
     item.url.toLowerCase().includes(discoveredSearchFilter.toLowerCase())
   ) || [];
 
+  const filteredCrawlLogs = crawlLogs.filter(log => {
+    if (logFilter === 'all') return true;
+    if (logFilter === 'error') return log.level === 'error' || log.level === 'warning';
+    if (logFilter === 'success') return log.level === 'success';
+    return true;
+  });
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       
@@ -214,17 +294,17 @@ export default function App() {
               <h1 style={{ fontSize: '1.25rem', fontWeight: 800, letterSpacing: '-0.02em', background: 'linear-gradient(to right, #fff, #94a3b8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontFamily: 'var(--font-display)' }}>
                 AHREFS SITE AUDITOR <span style={{ color: 'var(--accent-secondary)', WebkitTextFillColor: 'var(--accent-secondary)' }}>PRO</span>
               </h1>
-              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500 }}>Technical Crawler & Image ALT Tracking Engine</p>
+              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500 }}>Real-Time Streaming Crawler & Image ALT Tracking Engine</p>
             </div>
           </div>
 
           {siteData && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button onClick={exportMissingAltCSV} className="btn-secondary" style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171' }} title="Export Missing ALT Images Tracker (CSV)">
-                <ImageIcon size={15} /> Export Missing ALTs ({siteData.allMissingAltImages?.length || 0})
+                <ImageIcon size={15} /> Missing ALTs ({siteData.allMissingAltImages?.length || 0})
               </button>
               <button onClick={exportAllPagesCSV} className="btn-secondary" title="Export Crawled Audit Data (CSV)">
-                <FileSpreadsheet size={15} /> Export Crawled ({siteData.pages.length})
+                <FileSpreadsheet size={15} /> Export CSV ({siteData.pages.length})
               </button>
               <button onClick={() => window.print()} className="btn-primary" style={{ padding: '8px 18px', fontSize: '0.85rem' }}>
                 <FileText size={15} /> Print / PDF
@@ -364,7 +444,7 @@ export default function App() {
                 {loading ? (
                   <>
                     <RefreshCw size={18} style={{ animation: 'spin 1s linear infinite' }} />
-                    Crawling ({effectiveMaxPages} Max)...
+                    Auditing ({progressState.percent}%)...
                   </>
                 ) : (
                   <>
@@ -388,24 +468,162 @@ export default function App() {
           </div>
         )}
 
-        {/* Loading Crawl Screen */}
+        {/* LIVE REAL-TIME AJAX PROGRESS PERCENTAGE & STREAMING LOG CONSOLE */}
         {loading && (
-          <div className="glass-panel animate-fade-in" style={{ padding: '60px 40px', textAlign: 'center', margin: '40px 0' }}>
-            <div style={{
-              width: '70px',
-              height: '70px',
-              borderRadius: '50%',
-              border: '4px solid rgba(99, 102, 241, 0.2)',
-              borderTopColor: 'var(--accent-primary)',
-              margin: '0 auto 24px',
-              animation: 'spin 1s linear infinite'
-            }} />
-            <h3 style={{ fontSize: '1.4rem', fontWeight: 700, fontFamily: 'var(--font-display)', marginBottom: '8px' }}>
-              Parsing Sitemap & Auditing Images on <span style={{ color: 'var(--accent-secondary)' }}>{urlInput}</span>
-            </h3>
-            <p style={{ color: 'var(--text-muted)', maxWidth: '640px', margin: '0 auto', fontSize: '0.95rem' }}>
-              Extracting all image URLs, checking alt attributes, generating AI-suggested alt tags, and compiling comprehensive technical SEO diagnostics...
-            </p>
+          <div className="animate-fade-in" style={{ marginBottom: '28px' }}>
+            
+            {/* Real-time Percentage & Progress Banner */}
+            <div className="glass-panel glass-panel-glow" style={{ padding: '28px', marginBottom: '16px', background: 'radial-gradient(ellipse at top, rgba(99, 102, 241, 0.18), rgba(15, 23, 42, 0.95) 75%)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--accent-emerald)', boxShadow: '0 0 12px #10b981', animation: 'pulseGlow 1.2s infinite' }} />
+                  <div>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: 700, fontFamily: 'var(--font-display)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      Crawling & Auditing Live: <span style={{ color: 'var(--accent-secondary)' }}>{progressState.currentUrl || urlInput}</span>
+                    </h3>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Streaming via Server-Sent Events (SSE) &bull; {progressState.activeWorkers} Concurrent Spider Threads
+                    </div>
+                  </div>
+                </div>
+
+                {/* Big Percentage Number */}
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                  <span style={{ fontSize: '2.6rem', fontWeight: 900, fontFamily: 'var(--font-display)', color: '#38bdf8', lineHeight: 1 }}>
+                    {progressState.percent}%
+                  </span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>Completed</span>
+                </div>
+              </div>
+
+              {/* Glowing Percentage Bar */}
+              <div style={{ width: '100%', height: '12px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '999px', overflow: 'hidden', position: 'relative', marginBottom: '18px' }}>
+                <div
+                  style={{
+                    width: `${progressState.percent}%`,
+                    height: '100%',
+                    background: 'linear-gradient(90deg, #6366f1 0%, #06b6d4 50%, #10b981 100%)',
+                    borderRadius: '999px',
+                    transition: 'width 0.3s ease',
+                    boxShadow: '0 0 16px rgba(6, 182, 212, 0.6)'
+                  }}
+                />
+              </div>
+
+              {/* Progress Counters Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Crawled Pages</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff' }}>
+                    {progressState.currentCrawled} <span style={{ fontSize: '0.85rem', color: 'var(--text-dim)', fontWeight: 500 }}>/ {progressState.targetLimit} max</span>
+                  </div>
+                </div>
+
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Discovered Sitemap URLs</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--accent-secondary)' }}>
+                    {progressState.totalDiscovered.toLocaleString()}
+                  </div>
+                </div>
+
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Live Logs Streamed</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--accent-emerald)' }}>
+                    {crawlLogs.length} events
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* LIVE TERMINAL LOG CONSOLE */}
+            <div className="glass-panel" style={{ background: '#090d16', border: '1px solid #1e293b', borderRadius: '12px', overflow: 'hidden' }}>
+              <div style={{ padding: '12px 18px', background: '#0f172a', borderBottom: '1px solid #1e293b', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Terminal size={16} color="#38bdf8" />
+                  <span style={{ fontSize: '0.85rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: '#e2e8f0' }}>LIVE CRAWL CONSOLE</span>
+                  <span className="badge badge-info" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>Streaming AJAX</span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ display: 'flex', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '6px', padding: '2px' }}>
+                    {['all', 'success', 'error'].map(f => (
+                      <button
+                        key={f}
+                        onClick={() => setLogFilter(f)}
+                        style={{
+                          background: logFilter === f ? 'rgba(99, 102, 241, 0.4)' : 'transparent',
+                          border: 'none',
+                          color: logFilter === f ? '#fff' : 'var(--text-muted)',
+                          fontSize: '0.72rem',
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          textTransform: 'capitalize'
+                        }}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={() => setAutoScroll(!autoScroll)}
+                    className="btn-secondary"
+                    style={{ padding: '4px 8px', fontSize: '0.72rem', background: autoScroll ? 'rgba(16, 185, 129, 0.2)' : 'transparent', color: autoScroll ? '#34d399' : 'var(--text-muted)' }}
+                  >
+                    Auto-scroll: {autoScroll ? 'ON' : 'OFF'}
+                  </button>
+
+                  <button
+                    onClick={() => setConsoleOpen(!consoleOpen)}
+                    className="btn-secondary"
+                    style={{ padding: '4px' }}
+                  >
+                    {consoleOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Terminal Logs Window */}
+              {consoleOpen && (
+                <div
+                  ref={logContainerRef}
+                  style={{
+                    height: '280px',
+                    overflowY: 'auto',
+                    padding: '14px 18px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.8rem',
+                    lineHeight: 1.6,
+                    background: '#070a12',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}
+                >
+                  {filteredCrawlLogs.length === 0 ? (
+                    <div style={{ color: 'var(--text-dim)', textAlign: 'center', paddingTop: '40px' }}>
+                      Waiting for crawler spider worker telemetry...
+                    </div>
+                  ) : (
+                    filteredCrawlLogs.map((log, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'baseline',
+                          gap: '10px',
+                          color: log.level === 'error' ? '#f87171' : log.level === 'warning' ? '#fbbf24' : log.level === 'success' ? '#34d399' : '#94a3b8'
+                        }}
+                      >
+                        <span style={{ color: 'var(--text-dim)', fontSize: '0.72rem', userSelect: 'none' }}>[{log.timestamp}]</span>
+                        <span style={{ wordBreak: 'break-all' }}>{log.message}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -452,7 +670,7 @@ export default function App() {
                       <span className={`badge ${siteData.siteHealthScore >= 80 ? 'badge-passed' : siteData.siteHealthScore >= 60 ? 'badge-warning' : 'badge-critical'}`} style={{ fontSize: '0.85rem', padding: '4px 12px' }}>
                         Grade: {siteData.siteGrade}
                       </span>
-                      <span style={{ fontSize: '0.82rem', color: 'var(--text-dim)' }}>{siteData.stats.totalPagesCrawled} Pages Audited</span>
+                      <span style={{ fontSize: '0.82rem', color: 'var(--text-dim)' }}>{siteData.stats.totalPagesCrawled} Pages Audited in {(siteData.crawlDurationMs / 1000).toFixed(1)}s</span>
                     </div>
                     <h2 style={{ fontSize: '1.5rem', fontWeight: 700, fontFamily: 'var(--font-display)', wordBreak: 'break-all' }}>
                       {siteData.domain}
@@ -636,7 +854,7 @@ export default function App() {
               </div>
             )}
 
-            {/* TAB 1: Crawled Pages Table */}
+            {/* TAB: Crawled Pages Table */}
             {activeTab === 'site-health' && (
               <div className="animate-fade-in">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
@@ -862,7 +1080,7 @@ export default function App() {
                           </div>
 
                           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Affected Page List:</div>
-                          <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             {issue.affectedUrls.map((affUrl, uIdx) => (
                               <div
                                 key={uIdx}
@@ -947,7 +1165,7 @@ export default function App() {
           </div>
         )}
 
-        {/* DETAILED PAGE INSPECTION MODAL WITH IMAGE ALT TRACKER */}
+        {/* DETAILED PAGE INSPECTION MODAL */}
         {selectedPageModal && (
           <div style={{
             position: 'fixed',
@@ -969,7 +1187,6 @@ export default function App() {
               background: '#0f172a',
               border: '1px solid var(--border-focus)'
             }}>
-              {/* Modal Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
@@ -989,7 +1206,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Page Overview Metrics */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '20px' }}>
                 <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Meta Description ({selectedPageModal.meta?.metaDescriptionLength || 0} chars)</div>
@@ -1009,7 +1225,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* DETAILED IMAGE ALT TRACKING SECTION */}
+              {/* IMAGE ALT TRACKING IN MODAL */}
               <div style={{ background: 'rgba(15, 23, 42, 0.95)', borderRadius: '12px', border: '1px solid var(--border-subtle)', padding: '20px', marginBottom: '20px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1047,7 +1263,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Images List */}
                 <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {(modalImgTab === 'missing' ? selectedPageModal.images?.missingAltList : selectedPageModal.images?.list)?.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '20px', color: 'var(--accent-emerald)', fontSize: '0.85rem' }}>
@@ -1068,7 +1283,6 @@ export default function App() {
                           border: '1px solid ' + (img.hasAlt ? 'var(--border-subtle)' : 'rgba(239, 68, 68, 0.3)')
                         }}
                       >
-                        {/* Thumbnail */}
                         <div style={{ width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', background: '#0a0d14', border: '1px solid var(--border-subtle)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <img
                             src={img.src}
@@ -1078,7 +1292,6 @@ export default function App() {
                           />
                         </div>
 
-                        {/* Image details */}
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
                             {img.hasAlt ? (
@@ -1100,7 +1313,6 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* Actions */}
                         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                           <a
                             href={img.src}
@@ -1127,7 +1339,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Other Issues on this URL */}
               <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '10px' }}>Other Technical Issues on this URL:</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {(selectedPageModal.issues || []).map((iss, i) => (
@@ -1148,7 +1359,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="no-print" style={{ borderTop: '1px solid var(--border-subtle)', padding: '24px', textAlign: 'center', fontSize: '0.8rem', color: 'var(--text-dim)' }}>
-        Ahrefs Site Auditor Pro &bull; Direct XML Sitemap & Image ALT Tracking Intelligence Suite
+        Ahrefs Site Auditor Pro &bull; Real-Time Streaming AJAX Percentage & Image ALT Intelligence Suite
       </footer>
     </div>
   );
