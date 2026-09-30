@@ -445,13 +445,187 @@ export default function App() {
     }
   };
 
+  const checkIssueStillExists = (issueTitle, freshPageData, targetUrl, currentSiteData) => {
+    const titleLower = (issueTitle || '').toLowerCase().trim();
+
+    // 1. Cross-Page Duplicate Title Check
+    if (titleLower.includes('duplicate title')) {
+      const freshTitle = freshPageData.meta?.title?.trim();
+      if (!freshTitle) return { exists: false, reason: 'Page has no title tag' };
+      const duplicateMatches = (currentSiteData?.pages || []).filter(p => 
+        p.url !== targetUrl && 
+        p.meta?.title?.trim() && 
+        p.meta.title.trim().toLowerCase() === freshTitle.toLowerCase()
+      );
+      if (duplicateMatches.length > 0) {
+        return { 
+          exists: true, 
+          reason: `Still duplicate! Identical title "${freshTitle.substring(0, 38)}..." matches ${duplicateMatches[0].url}` 
+        };
+      }
+      return { exists: false, reason: 'Title tag is unique across all crawled pages.' };
+    }
+
+    // 2. Cross-Page Duplicate Meta Description Check
+    if (titleLower.includes('duplicate meta description')) {
+      const freshDesc = freshPageData.meta?.metaDescription?.trim();
+      if (!freshDesc) return { exists: false, reason: 'No meta description found' };
+      const duplicateMatches = (currentSiteData?.pages || []).filter(p => 
+        p.url !== targetUrl && 
+        p.meta?.metaDescription?.trim() && 
+        p.meta.metaDescription.trim().toLowerCase() === freshDesc.toLowerCase()
+      );
+      if (duplicateMatches.length > 0) {
+        return { 
+          exists: true, 
+          reason: `Still duplicate! Identical description matches ${duplicateMatches[0].url}` 
+        };
+      }
+      return { exists: false, reason: 'Meta description is unique.' };
+    }
+
+    // 3. Cross-Page Duplicate H1 Check
+    if (titleLower.includes('duplicate h1')) {
+      const freshH1 = freshPageData.headings?.h1?.[0]?.trim();
+      if (!freshH1) return { exists: false, reason: 'No H1 found' };
+      const duplicateMatches = (currentSiteData?.pages || []).filter(p => 
+        p.url !== targetUrl && 
+        p.headings?.h1?.[0]?.trim() && 
+        p.headings.h1[0].trim().toLowerCase() === freshH1.toLowerCase()
+      );
+      if (duplicateMatches.length > 0) {
+        return { 
+          exists: true, 
+          reason: `Still duplicate! Identical H1 matches ${duplicateMatches[0].url}` 
+        };
+      }
+      return { exists: false, reason: 'H1 is unique.' };
+    }
+
+    // 4. Missing Alt Images
+    if (titleLower.includes('missing alt') || titleLower.includes('image')) {
+      const missingCount = freshPageData.images?.missingAlt || 0;
+      if (missingCount > 0) {
+        return { exists: true, reason: `${missingCount} image(s) still missing alt attribute` };
+      }
+      return { exists: false, reason: 'All images have valid alt text.' };
+    }
+
+    // 5. Open Graph Metadata
+    if (titleLower.includes('open graph') || titleLower.includes('og:')) {
+      const missing = [];
+      if (!freshPageData.social?.ogTitle) missing.push('og:title');
+      if (!freshPageData.social?.ogImage) missing.push('og:image');
+      if (missing.length > 0) {
+        return { exists: true, reason: `Open Graph still incomplete (missing: ${missing.join(', ')})` };
+      }
+      return { exists: false, reason: 'Open Graph metadata is complete.' };
+    }
+
+    // 6. Canonical Tag
+    if (titleLower.includes('canonical')) {
+      if (!freshPageData.meta?.canonicalUrl) {
+        return { exists: true, reason: 'Canonical tag is still missing' };
+      }
+      return { exists: false, reason: 'Canonical tag is properly declared.' };
+    }
+
+    // 7. Title Length / Missing
+    if (titleLower.includes('missing title')) {
+      if (!freshPageData.meta?.title) return { exists: true, reason: 'Title tag is still missing' };
+      return { exists: false };
+    }
+    if (titleLower.includes('title tag too short')) {
+      const len = freshPageData.meta?.titleLength || 0;
+      if (len < 30) return { exists: true, reason: `Title is ${len} chars (must be >= 30)` };
+      return { exists: false };
+    }
+    if (titleLower.includes('title tag too long') || titleLower.includes('truncated')) {
+      const len = freshPageData.meta?.titleLength || 0;
+      if (len > 60) return { exists: true, reason: `Title is ${len} chars (must be <= 60)` };
+      return { exists: false };
+    }
+
+    // 8. Meta Description Length / Missing
+    if (titleLower.includes('missing meta description')) {
+      if (!freshPageData.meta?.metaDescription) return { exists: true, reason: 'Meta description is still missing' };
+      return { exists: false };
+    }
+    if (titleLower.includes('meta description too short')) {
+      const len = freshPageData.meta?.metaDescriptionLength || 0;
+      if (len < 70) return { exists: true, reason: `Meta description is ${len} chars (must be >= 70)` };
+      return { exists: false };
+    }
+    if (titleLower.includes('meta description too long')) {
+      const len = freshPageData.meta?.metaDescriptionLength || 0;
+      if (len > 160) return { exists: true, reason: `Meta description is ${len} chars (must be <= 160)` };
+      return { exists: false };
+    }
+
+    // 9. H1 Headings (Missing or Multiple)
+    if (titleLower.includes('missing h1')) {
+      if ((freshPageData.headings?.h1?.length || 0) === 0) return { exists: true, reason: 'No H1 tag detected on page' };
+      return { exists: false };
+    }
+    if (titleLower.includes('multiple h1')) {
+      const count = freshPageData.headings?.h1?.length || 0;
+      if (count > 1) return { exists: true, reason: `${count} H1 tags detected on page` };
+      return { exists: false };
+    }
+
+    // 10. Performance / TTFB / HTML Size
+    if (titleLower.includes('ttfb') || titleLower.includes('server response')) {
+      if (freshPageData.ttfbMs > 600) return { exists: true, reason: `TTFB is still ${freshPageData.ttfbMs}ms (threshold 600ms)` };
+      return { exists: false };
+    }
+    if (titleLower.includes('large html')) {
+      if (parseFloat(freshPageData.content?.htmlSizeKb || 0) > 100) {
+        return { exists: true, reason: `HTML payload is still ${freshPageData.content.htmlSizeKb} KB` };
+      }
+      return { exists: false };
+    }
+    if (titleLower.includes('text-to-html')) {
+      if (parseFloat(freshPageData.content?.textToHtmlRatio || 0) < 8.0) {
+        return { exists: true, reason: `Text ratio is still ${freshPageData.content.textToHtmlRatio}%` };
+      }
+      return { exists: false };
+    }
+
+    // 11. Generic Anchor Text
+    if (titleLower.includes('generic link anchor') || titleLower.includes('anchor')) {
+      if ((freshPageData.links?.genericAnchorCount || 0) > 2) {
+        return { exists: true, reason: `${freshPageData.links.genericAnchorCount} generic anchor text links found` };
+      }
+      return { exists: false };
+    }
+
+    // 12. 4xx / 5xx Status Code
+    if (titleLower.includes('4xx') || titleLower.includes('5xx') || titleLower.includes('broken')) {
+      if (freshPageData.statusCode >= 400 || freshPageData.isBroken) {
+        return { exists: true, reason: `Page returned HTTP ${freshPageData.statusCode}` };
+      }
+      return { exists: false };
+    }
+
+    // Fallback: Check page-level issue list
+    const match = (freshPageData.issues || []).find(iss => 
+      iss.title.toLowerCase().includes(titleLower) || 
+      titleLower.includes(iss.title.toLowerCase())
+    );
+    if (match) {
+      return { exists: true, reason: match.description || match.title };
+    }
+
+    return { exists: false };
+  };
+
   const verifyAndResolveIssue = async (issueTitle, targetUrl, e) => {
     if (e) e.stopPropagation();
     const key = `${issueTitle}::${targetUrl}`;
 
     setIssueVerificationStatus(prev => ({
       ...prev,
-      [key]: { status: 'checking', message: 'Checking live URL...' }
+      [key]: { status: 'checking', message: 'Fetching fresh page and re-verifying...' }
     }));
 
     try {
@@ -463,9 +637,10 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to audit URL');
 
-      const stillExists = (data.issues || []).some(iss => iss.title.toLowerCase() === issueTitle.toLowerCase());
+      // Accurately verify whether the specific issue still exists on this page
+      const checkResult = checkIssueStillExists(issueTitle, data, targetUrl, siteData);
 
-      if (!stillExists) {
+      if (!checkResult.exists) {
         setIssueVerificationStatus(prev => ({
           ...prev,
           [key]: {
@@ -474,13 +649,19 @@ export default function App() {
             message: '✓ Verified Fixed! Issue is resolved.'
           }
         }));
+
+        // Update in-memory page data so cross-checks use the new page state
+        if (siteData && siteData.pages) {
+          const updatedPages = siteData.pages.map(p => p.url === targetUrl ? data : p);
+          setSiteData(prev => ({ ...prev, pages: updatedPages }));
+        }
       } else {
         setIssueVerificationStatus(prev => ({
           ...prev,
           [key]: {
             status: 'still_error',
             lastChecked: new Date().toLocaleTimeString(),
-            message: '❌ Still Error: Issue is still present on this page.'
+            message: `❌ Still Error: ${checkResult.reason}`
           }
         }));
       }
@@ -2054,6 +2235,19 @@ export default function App() {
                                         <span className="badge badge-passed" style={{ fontSize: '0.7rem' }}>
                                           <CheckCircle2 size={11} /> Resolved
                                         </span>
+                                      ) : issStatus?.status === 'checking' ? (
+                                        <span style={{ fontSize: '0.7rem', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                          <RefreshCw size={11} className="animate-spin" /> Verifying...
+                                        </span>
+                                      ) : issStatus?.status === 'still_error' ? (
+                                        <button
+                                          onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
+                                          className="btn-secondary"
+                                          style={{ padding: '3px 8px', fontSize: '0.7rem', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.12)' }}
+                                          title={issStatus.message}
+                                        >
+                                          <AlertTriangle size={11} color="#f87171" /> Still Error (Re-test)
+                                        </button>
                                       ) : (
                                         <button
                                           onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
@@ -2482,23 +2676,27 @@ export default function App() {
                                       <span className="badge badge-passed" style={{ fontSize: '0.7rem' }}>
                                         <CheckCircle2 size={11} /> Resolved
                                       </span>
+                                    ) : verifyState?.status === 'checking' || verifyState?.status === 'verifying' ? (
+                                      <span style={{ fontSize: '0.7rem', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        <RefreshCw size={11} className="animate-spin" /> Verifying...
+                                      </span>
+                                    ) : verifyState?.status === 'still_error' ? (
+                                      <button
+                                        onClick={(e) => verifyAndResolveIssue(selectedIssueModal.title, urlStr, e)}
+                                        className="btn-secondary"
+                                        style={{ padding: '4px 8px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px', color: '#f87171', borderColor: 'rgba(239,68,68,0.4)', background: 'rgba(239,68,68,0.12)' }}
+                                        title={verifyState.message}
+                                      >
+                                        <AlertTriangle size={11} color="#f87171" /> Still Error (Re-test)
+                                      </button>
                                     ) : (
                                       <button
                                         onClick={(e) => verifyAndResolveIssue(selectedIssueModal.title, urlStr, e)}
                                         className="btn-secondary"
                                         style={{ padding: '4px 8px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                                        disabled={verifyState?.status === 'verifying'}
                                         title="Re-crawl and verify if this URL is fixed"
                                       >
-                                        {verifyState?.status === 'verifying' ? (
-                                          <>
-                                            <RefreshCw size={11} className="animate-spin" /> Verifying...
-                                          </>
-                                        ) : (
-                                          <>
-                                            <CheckCircle2 size={11} color="#10b981" /> Verify Fix
-                                          </>
-                                        )}
+                                        <CheckCircle2 size={11} color="#10b981" /> Verify Fix
                                       </button>
                                     )}
                                   </div>
