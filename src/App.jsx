@@ -33,6 +33,11 @@ export default function App() {
   const [expandedIssue, setExpandedIssue] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
 
+  // Issues Filter State (Ahrefs Standard Suite)
+  const [issueSeverityFilter, setIssueSeverityFilter] = useState('all'); // 'all', 'Critical', 'Warning', 'Passed'
+  const [issueCategoryFilter, setIssueCategoryFilter] = useState('all');
+  const [issueSearchFilter, setIssueSearchFilter] = useState('');
+
   // Live Checkmark & Resolution Verification State
   const [urlVerificationStatus, setUrlVerificationStatus] = useState({});
   const [imageVerificationStatus, setImageVerificationStatus] = useState({});
@@ -1664,153 +1669,338 @@ export default function App() {
               </div>
             )}
 
-            {/* TAB: Site-Wide Aggregate Issues */}
-            {activeTab === 'site-issues' && (
-              <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                {siteData.aggregateIssues.map((issue, idx) => {
-                  const isExpanded = expandedIssue === idx;
-                  return (
+            {/* TAB: All Issues Explorer (Ahrefs Standard Suite) */}
+            {activeTab === 'site-issues' && (() => {
+              const allIssues = siteData.aggregateIssues || [];
+              const criticalCount = allIssues.filter(i => i.severity === 'Critical').length;
+              const warningCount = allIssues.filter(i => i.severity === 'Warning').length;
+              const passedCount = allIssues.filter(i => i.severity === 'Passed').length;
+
+              // Categories present in the report
+              const categories = ['all', ...new Set(allIssues.map(i => i.category))];
+
+              const filteredIssues = allIssues.filter(issue => {
+                // Severity filter
+                if (issueSeverityFilter !== 'all' && issue.severity !== issueSeverityFilter) return false;
+                // Category filter
+                if (issueCategoryFilter !== 'all' && issue.category !== issueCategoryFilter) return false;
+                // Search filter
+                if (issueSearchFilter) {
+                  const query = issueSearchFilter.toLowerCase();
+                  const matchTitle = (issue.title || '').toLowerCase().includes(query);
+                  const matchDesc = (issue.description || '').toLowerCase().includes(query);
+                  const matchCat = (issue.category || '').toLowerCase().includes(query);
+                  const matchRec = (issue.recommendation || '').toLowerCase().includes(query);
+                  const matchUrls = (issue.affectedUrls || []).some(u => u.toLowerCase().includes(query));
+                  if (!matchTitle && !matchDesc && !matchCat && !matchRec && !matchUrls) return false;
+                }
+                return true;
+              });
+
+              return (
+                <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  {/* Summary Metric Header Cards */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
+                    <div className="glass-panel" style={{ padding: '16px 20px', borderLeft: '4px solid var(--accent-primary)' }}>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>Total SEO Checks Flagged</div>
+                      <div style={{ fontSize: '1.75rem', fontWeight: 900, color: '#fff', marginTop: '4px' }}>
+                        {allIssues.length}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '2px' }}>Across {siteData.pages.length} crawled pages</div>
+                    </div>
+
                     <div
-                      key={idx}
                       className="glass-panel"
-                      style={{
-                        padding: '20px',
-                        borderLeft: `4px solid ${issue.severity === 'Critical' ? '#ef4444' : issue.severity === 'Warning' ? '#f59e0b' : '#10b981'}`
-                      }}
+                      onClick={() => setIssueSeverityFilter(issueSeverityFilter === 'Critical' ? 'all' : 'Critical')}
+                      style={{ padding: '16px 20px', borderLeft: '4px solid #ef4444', cursor: 'pointer', background: issueSeverityFilter === 'Critical' ? 'rgba(239, 68, 68, 0.12)' : undefined }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setExpandedIssue(isExpanded ? null : idx)}>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-                            <span className={`badge ${issue.severity === 'Critical' ? 'badge-critical' : issue.severity === 'Warning' ? 'badge-warning' : 'badge-passed'}`}>
-                              {issue.severity}
-                            </span>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase' }}>
-                              {issue.category}
-                            </span>
-                            <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
-                              Affects {issue.affectedUrls.length} Page(s)
-                            </span>
-                          </div>
-                          <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>
-                            {issue.title}
-                          </h3>
-                          <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                            {issue.description}
-                          </p>
-                        </div>
-                        <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '0.8rem' }}>
-                          {isExpanded ? 'Hide Details' : `View ${issue.affectedUrls.length} Pages`}
-                        </button>
+                      <div style={{ fontSize: '0.78rem', color: '#f87171', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <AlertCircle size={14} /> Critical Errors
+                      </div>
+                      <div style={{ fontSize: '1.75rem', fontWeight: 900, color: '#f87171', marginTop: '4px' }}>
+                        {criticalCount}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '2px' }}>Requires immediate fix</div>
+                    </div>
+
+                    <div
+                      className="glass-panel"
+                      onClick={() => setIssueSeverityFilter(issueSeverityFilter === 'Warning' ? 'all' : 'Warning')}
+                      style={{ padding: '16px 20px', borderLeft: '4px solid #f59e0b', cursor: 'pointer', background: issueSeverityFilter === 'Warning' ? 'rgba(245, 158, 11, 0.12)' : undefined }}
+                    >
+                      <div style={{ fontSize: '0.78rem', color: '#fbbf24', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <AlertTriangle size={14} /> Warnings
+                      </div>
+                      <div style={{ fontSize: '1.75rem', fontWeight: 900, color: '#fbbf24', marginTop: '4px' }}>
+                        {warningCount}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '2px' }}>Optimization opportunities</div>
+                    </div>
+
+                    <div
+                      className="glass-panel"
+                      onClick={() => setIssueSeverityFilter(issueSeverityFilter === 'Passed' ? 'all' : 'Passed')}
+                      style={{ padding: '16px 20px', borderLeft: '4px solid #38bdf8', cursor: 'pointer', background: issueSeverityFilter === 'Passed' ? 'rgba(56, 189, 248, 0.12)' : undefined }}
+                    >
+                      <div style={{ fontSize: '0.78rem', color: '#38bdf8', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <CheckCircle2 size={14} /> Notices & Passed
+                      </div>
+                      <div style={{ fontSize: '1.75rem', fontWeight: 900, color: '#38bdf8', marginTop: '4px' }}>
+                        {passedCount}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '2px' }}>Passed standard criteria</div>
+                    </div>
+                  </div>
+
+                  {/* Filter Toolbar (Ahrefs Style) */}
+                  <div className="glass-panel" style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                      {/* Severity Selector Tabs */}
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {[
+                          { id: 'all', label: `All Issues (${allIssues.length})` },
+                          { id: 'Critical', label: `🔴 Errors (${criticalCount})`, color: '#f87171' },
+                          { id: 'Warning', label: `🟡 Warnings (${warningCount})`, color: '#fbbf24' },
+                          { id: 'Passed', label: `🔵 Notices (${passedCount})`, color: '#38bdf8' }
+                        ].map(s => (
+                          <button
+                            key={s.id}
+                            onClick={() => setIssueSeverityFilter(s.id)}
+                            className={`btn-secondary ${issueSeverityFilter === s.id ? 'active' : ''}`}
+                            style={{
+                              padding: '6px 14px',
+                              fontSize: '0.8rem',
+                              fontWeight: 700,
+                              background: issueSeverityFilter === s.id ? 'rgba(99, 102, 241, 0.25)' : undefined,
+                              borderColor: issueSeverityFilter === s.id ? 'var(--accent-primary)' : undefined,
+                              color: issueSeverityFilter === s.id ? '#fff' : s.color || 'var(--text-muted)'
+                            }}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
                       </div>
 
-                      {isExpanded && (
-                        <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
-                          <div style={{ padding: '10px 14px', background: 'rgba(15, 23, 42, 0.8)', borderRadius: '8px', marginBottom: '12px', fontSize: '0.85rem' }}>
-                            <span style={{ color: 'var(--accent-secondary)', fontWeight: 600 }}>Action: </span>
-                            {issue.recommendation}
-                          </div>
-
-                          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Affected Page List:</div>
-                          <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            {issue.affectedUrls.map((affUrl, uIdx) => {
-                              const key = `${issue.title}::${affUrl}`;
-                              const issStatus = issueVerificationStatus[key];
-                              return (
-                                <div
-                                  key={uIdx}
-                                  style={{
-                                    padding: '8px 12px',
-                                    background: 'rgba(255, 255, 255, 0.03)',
-                                    borderRadius: '6px',
-                                    fontSize: '0.82rem',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    gap: '10px'
-                                  }}
-                                >
-                                  <span
-                                    onClick={() => {
-                                      const targetP = siteData.pages.find(p => p.url === affUrl);
-                                      if (targetP) setSelectedPageModal(targetP);
-                                    }}
-                                    style={{
-                                      color: 'var(--accent-secondary)',
-                                      cursor: 'pointer',
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis',
-                                      whiteSpace: 'nowrap',
-                                      flex: 1
-                                    }}
-                                  >
-                                    {affUrl}
-                                  </span>
-
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                                    {(() => {
-                                      if (issStatus?.status === 'checking') {
-                                        return (
-                                          <span className="badge badge-info" style={{ fontSize: '0.72rem', padding: '3px 8px' }}>
-                                            <RefreshCw size={11} className="animate-spin" /> Verifying...
-                                          </span>
-                                        );
-                                      }
-                                      if (issStatus?.status === 'completed') {
-                                        return (
-                                          <button
-                                            onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
-                                            className="badge badge-passed"
-                                            style={{ fontSize: '0.72rem', padding: '3px 8px', border: 'none', cursor: 'pointer' }}
-                                          >
-                                            <CheckCircle2 size={11} color="#10b981" /> Resolved
-                                          </button>
-                                        );
-                                      }
-                                      if (issStatus?.status === 'still_error') {
-                                        return (
-                                          <button
-                                            onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
-                                            className="badge badge-critical"
-                                            style={{ fontSize: '0.72rem', padding: '3px 8px', border: 'none', cursor: 'pointer' }}
-                                            title="Issue still present on this page"
-                                          >
-                                            <AlertTriangle size={11} /> Still Error (Re-test)
-                                          </button>
-                                        );
-                                      }
-                                      return (
-                                        <button
-                                          onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
-                                          className="btn-secondary"
-                                          style={{ padding: '3px 8px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                                        >
-                                          <Check size={11} /> Verify Fix
-                                        </button>
-                                      );
-                                    })()}
-
-                                    <button
-                                      onClick={() => {
-                                        const targetP = siteData.pages.find(p => p.url === affUrl);
-                                        if (targetP) setSelectedPageModal(targetP);
-                                      }}
-                                      className="btn-secondary"
-                                      style={{ padding: '3px 8px', fontSize: '0.72rem' }}
-                                    >
-                                      Inspect &rarr;
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
+                      {/* Live Search Input */}
+                      <div style={{ position: 'relative', minWidth: '260px' }}>
+                        <Search size={15} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                        <input
+                          type="text"
+                          className="input-field"
+                          placeholder="Search issues, tags, or URLs..."
+                          value={issueSearchFilter}
+                          onChange={(e) => setIssueSearchFilter(e.target.value)}
+                          style={{ padding: '7px 12px 7px 34px', fontSize: '0.82rem' }}
+                        />
+                      </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+
+                    {/* Category Filter Pills */}
+                    <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px' }}>
+                      {categories.map(cat => {
+                        const countInCat = cat === 'all' ? allIssues.length : allIssues.filter(i => i.category === cat).length;
+                        const isSelected = issueCategoryFilter === cat;
+                        return (
+                          <button
+                            key={cat}
+                            onClick={() => setIssueCategoryFilter(cat)}
+                            style={{
+                              padding: '4px 12px',
+                              borderRadius: '999px',
+                              border: isSelected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                              background: isSelected ? 'var(--accent-primary)' : 'rgba(255, 255, 255, 0.04)',
+                              color: isSelected ? '#fff' : 'var(--text-muted)',
+                              fontSize: '0.74rem',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              whiteSpace: 'nowrap',
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            {cat === 'all' ? 'All Categories' : cat} ({countInCat})
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Issues List Container */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {filteredIssues.length === 0 ? (
+                      <div className="glass-panel" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                        <CheckCircle2 size={32} color="#10b981" style={{ margin: '0 auto 12px' }} />
+                        <div style={{ fontWeight: 700, fontSize: '1.1rem', color: '#fff' }}>No Issues Found in this Filter</div>
+                        <p style={{ fontSize: '0.85rem', marginTop: '4px' }}>Try switching categories or clearing search query.</p>
+                      </div>
+                    ) : (
+                      filteredIssues.map((issue, idx) => {
+                        const isExpanded = expandedIssue === idx;
+                        const isCrit = issue.severity === 'Critical';
+                        const isWarn = issue.severity === 'Warning';
+                        const borderCol = isCrit ? '#ef4444' : isWarn ? '#f59e0b' : '#38bdf8';
+
+                        return (
+                          <div
+                            key={idx}
+                            className="glass-panel"
+                            style={{
+                              padding: '20px',
+                              borderLeft: `5px solid ${borderCol}`,
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            <div
+                              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', cursor: 'pointer', gap: '14px' }}
+                              onClick={() => setExpandedIssue(isExpanded ? null : idx)}
+                            >
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                                  <span className={`badge ${isCrit ? 'badge-critical' : isWarn ? 'badge-warning' : 'badge-passed'}`} style={{ fontSize: '0.72rem', padding: '3px 10px' }}>
+                                    {issue.severity === 'Critical' ? '🔴 Error' : issue.severity === 'Warning' ? '🟡 Warning' : '🔵 Notice'}
+                                  </span>
+                                  <span style={{ fontSize: '0.74rem', color: 'var(--text-dim)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    {issue.category}
+                                  </span>
+                                  <span className="badge badge-info" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                                    {issue.affectedUrls.length} Affected URL{issue.affectedUrls.length > 1 ? 's' : ''}
+                                  </span>
+                                </div>
+
+                                <h3 style={{ fontSize: '1.12rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.2px' }}>
+                                  {issue.title}
+                                </h3>
+                                <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginTop: '5px', lineHeight: 1.5 }}>
+                                  {issue.description}
+                                </p>
+                              </div>
+
+                              <button
+                                className="btn-secondary"
+                                style={{ padding: '7px 14px', fontSize: '0.8rem', flexShrink: 0, fontWeight: 600 }}
+                              >
+                                {isExpanded ? 'Collapse Details' : `View ${issue.affectedUrls.length} Pages (${isExpanded ? '▲' : '▼'})`}
+                              </button>
+                            </div>
+
+                            {isExpanded && (
+                              <div style={{ marginTop: '18px', paddingTop: '18px', borderTop: '1px solid var(--border-subtle)' }}>
+                                {/* Actionable Fix Recommendation */}
+                                <div style={{ padding: '12px 16px', background: 'rgba(15, 23, 42, 0.85)', borderRadius: '8px', marginBottom: '14px', border: '1px solid rgba(99, 102, 241, 0.2)', fontSize: '0.85rem', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                                  <span style={{ color: 'var(--accent-secondary)', fontWeight: 700, flexShrink: 0 }}>Recommended Action:</span>
+                                  <span style={{ color: '#e2e8f0', lineHeight: 1.5 }}>{issue.recommendation}</span>
+                                </div>
+
+                                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                  Affected Pages & Live Resolution Tracker:
+                                </div>
+
+                                <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                  {issue.affectedUrls.map((affUrl, uIdx) => {
+                                    const key = `${issue.title}::${affUrl}`;
+                                    const issStatus = issueVerificationStatus[key];
+                                    return (
+                                      <div
+                                        key={uIdx}
+                                        style={{
+                                          padding: '8px 12px',
+                                          background: 'rgba(255, 255, 255, 0.03)',
+                                          borderRadius: '6px',
+                                          fontSize: '0.82rem',
+                                          display: 'flex',
+                                          justifyContent: 'space-between',
+                                          alignItems: 'center',
+                                          gap: '10px'
+                                        }}
+                                      >
+                                        <span
+                                          onClick={() => {
+                                            const targetP = siteData.pages.find(p => p.url === affUrl);
+                                            if (targetP) setSelectedPageModal(targetP);
+                                          }}
+                                          style={{
+                                            color: 'var(--accent-secondary)',
+                                            cursor: 'pointer',
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                            flex: 1,
+                                            fontWeight: 500
+                                          }}
+                                          title={`Inspect ${affUrl}`}
+                                        >
+                                          {affUrl}
+                                        </span>
+
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                                          {(() => {
+                                            if (issStatus?.status === 'checking') {
+                                              return (
+                                                <span className="badge badge-info" style={{ fontSize: '0.72rem', padding: '3px 8px' }}>
+                                                  <RefreshCw size={11} className="animate-spin" /> Live Checking...
+                                                </span>
+                                              );
+                                            }
+                                            if (issStatus?.status === 'completed') {
+                                              return (
+                                                <button
+                                                  onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
+                                                  className="badge badge-passed"
+                                                  style={{ fontSize: '0.72rem', padding: '3px 8px', border: 'none', cursor: 'pointer' }}
+                                                  title={issStatus.message}
+                                                >
+                                                  <CheckCircle2 size={11} color="#10b981" /> Verified Fixed!
+                                                </button>
+                                              );
+                                            }
+                                            if (issStatus?.status === 'still_error') {
+                                              return (
+                                                <button
+                                                  onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
+                                                  className="badge badge-critical"
+                                                  style={{ fontSize: '0.72rem', padding: '3px 8px', border: 'none', cursor: 'pointer' }}
+                                                  title={issStatus.message}
+                                                >
+                                                  <AlertTriangle size={11} /> Still Error (Re-test)
+                                                </button>
+                                              );
+                                            }
+                                            return (
+                                              <button
+                                                onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
+                                                className="btn-secondary"
+                                                style={{ padding: '3px 8px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px', color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}
+                                                title="Audit live page to verify if this issue has been resolved"
+                                              >
+                                                <Check size={11} /> Check Fix
+                                              </button>
+                                            );
+                                          })()}
+
+                                          <button
+                                            onClick={() => {
+                                              const targetP = siteData.pages.find(p => p.url === affUrl);
+                                              if (targetP) setSelectedPageModal(targetP);
+                                            }}
+                                            className="btn-secondary"
+                                            style={{ padding: '3px 8px', fontSize: '0.72rem' }}
+                                          >
+                                            Inspect &rarr;
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* TAB: Ahrefs Domain Authority */}
             {activeTab === 'ahrefs-metrics' && (

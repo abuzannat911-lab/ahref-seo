@@ -163,6 +163,151 @@ function extractKeywords(text) {
     }));
 }
 
+function generateAggregateIssues(crawledPages) {
+  const siteIssuesMap = {};
+
+  // 1. Ingest page-level issues
+  crawledPages.forEach(page => {
+    (page.issues || []).forEach(issue => {
+      const key = `${issue.severity}::${issue.title}`;
+      if (!siteIssuesMap[key]) {
+        siteIssuesMap[key] = {
+          title: issue.title,
+          category: issue.category,
+          severity: issue.severity,
+          description: issue.description,
+          recommendation: issue.recommendation,
+          affectedUrls: []
+        };
+      }
+      if (!siteIssuesMap[key].affectedUrls.includes(page.url)) {
+        siteIssuesMap[key].affectedUrls.push(page.url);
+      }
+    });
+  });
+
+  // 2. Cross-Page Site-Wide Analysis: Duplicate Titles
+  const titleMap = {};
+  crawledPages.forEach(p => {
+    const t = p.meta?.title?.trim();
+    if (t && t.length > 5) {
+      if (!titleMap[t]) titleMap[t] = [];
+      titleMap[t].push(p.url);
+    }
+  });
+  Object.entries(titleMap).forEach(([titleText, urls]) => {
+    if (urls.length > 1) {
+      const key = `Critical::Duplicate Title Tags Across Pages`;
+      if (!siteIssuesMap[key]) {
+        siteIssuesMap[key] = {
+          title: 'Duplicate Title Tags Across Pages',
+          category: 'Meta & On-Page',
+          severity: 'Critical',
+          description: `Identical <title> tags detected across ${urls.length} pages: "${titleText.substring(0, 45)}..."`,
+          recommendation: 'Ensure each page has a unique, distinct title tag to avoid internal keyword cannibalization.',
+          affectedUrls: []
+        };
+      }
+      urls.forEach(u => {
+        if (!siteIssuesMap[key].affectedUrls.includes(u)) siteIssuesMap[key].affectedUrls.push(u);
+      });
+    }
+  });
+
+  // 3. Duplicate Meta Descriptions
+  const descMap = {};
+  crawledPages.forEach(p => {
+    const d = p.meta?.metaDescription?.trim();
+    if (d && d.length > 15) {
+      if (!descMap[d]) descMap[d] = [];
+      descMap[d].push(p.url);
+    }
+  });
+  Object.entries(descMap).forEach(([descText, urls]) => {
+    if (urls.length > 1) {
+      const key = `Warning::Duplicate Meta Descriptions Across Pages`;
+      if (!siteIssuesMap[key]) {
+        siteIssuesMap[key] = {
+          title: 'Duplicate Meta Descriptions Across Pages',
+          category: 'Meta & On-Page',
+          severity: 'Warning',
+          description: `Identical meta descriptions shared by ${urls.length} pages.`,
+          recommendation: 'Write tailored, distinct meta descriptions for each unique landing page.',
+          affectedUrls: []
+        };
+      }
+      urls.forEach(u => {
+        if (!siteIssuesMap[key].affectedUrls.includes(u)) siteIssuesMap[key].affectedUrls.push(u);
+      });
+    }
+  });
+
+  // 4. Duplicate H1 Headings
+  const h1Map = {};
+  crawledPages.forEach(p => {
+    const h1 = p.headings?.h1?.[0]?.trim();
+    if (h1 && h1.length > 3) {
+      if (!h1Map[h1]) h1Map[h1] = [];
+      h1Map[h1].push(p.url);
+    }
+  });
+  Object.entries(h1Map).forEach(([h1Text, urls]) => {
+    if (urls.length > 1) {
+      const key = `Warning::Duplicate H1 Headings Across Pages`;
+      if (!siteIssuesMap[key]) {
+        siteIssuesMap[key] = {
+          title: 'Duplicate H1 Headings Across Pages',
+          category: 'Content & Hierarchy',
+          severity: 'Warning',
+          description: `Identical <h1> heading "${h1Text.substring(0, 45)}..." found on ${urls.length} different pages.`,
+          recommendation: 'Differentiate H1 headings to clearly identify each page topic.',
+          affectedUrls: []
+        };
+      }
+      urls.forEach(u => {
+        if (!siteIssuesMap[key].affectedUrls.includes(u)) siteIssuesMap[key].affectedUrls.push(u);
+      });
+    }
+  });
+
+  // 5. Deep Click Depth (Depth >= 4)
+  const deepPages = crawledPages.filter(p => p.depth >= 4);
+  if (deepPages.length > 0) {
+    const key = `Warning::Deep Click Depth (Level 4+ Clicks)`;
+    siteIssuesMap[key] = {
+      title: 'Deep Click Depth (Level 4+ Clicks)',
+      category: 'Links & Architecture',
+      severity: 'Warning',
+      description: `${deepPages.length} pages require 4 or more clicks from the homepage to reach.`,
+      recommendation: 'Flatten website architecture so important pages are accessible within 3 clicks of the root.',
+      affectedUrls: deepPages.map(p => p.url)
+    };
+  }
+
+  // 6. Orphan Pages
+  const allInternalLinks = new Set();
+  crawledPages.forEach(p => {
+    (p.links?.discoveredInternal || []).forEach(l => allInternalLinks.add(l));
+  });
+  const orphanPages = crawledPages.filter(p => p.depth > 0 && !allInternalLinks.has(p.url));
+  if (orphanPages.length > 0) {
+    const key = `Warning::Orphan Pages (0 Incoming Inlinks)`;
+    siteIssuesMap[key] = {
+      title: 'Orphan Pages (0 Incoming Inlinks)',
+      category: 'Links & Architecture',
+      severity: 'Warning',
+      description: `${orphanPages.length} crawled pages have zero incoming internal links from other pages.`,
+      recommendation: 'Add contextual internal links from relevant site sections to orphaned pages.',
+      affectedUrls: orphanPages.map(p => p.url)
+    };
+  }
+
+  return Object.values(siteIssuesMap).sort((a, b) => {
+    const sevWeight = { 'Critical': 3, 'Warning': 2, 'Passed': 1 };
+    return (sevWeight[b.severity] || 0) - (sevWeight[a.severity] || 0) || b.affectedUrls.length - a.affectedUrls.length;
+  });
+}
+
 async function parseCustomSitemap(sitemapUrl) {
   const discovered = [];
   const subSitemaps = [];
@@ -300,24 +445,42 @@ async function auditSinglePage(targetUrl, referringPage = null, depth = 0) {
 
   const statusCode = response.status;
   const isBroken = statusCode >= 400;
+  const isRedirect = statusCode >= 300 && statusCode < 400;
   const html = typeof response.data === 'string' ? response.data : '';
   const $ = cheerio.load(html);
   const isHttps = targetUrl.startsWith('https://');
+  const responseHeaders = response.headers || {};
 
-  // Meta Tags
-  const title = $('title').first().text().trim() || '';
-  const metaDescription = $('meta[name="description" i]').attr('content')?.trim() || 
+  // Meta & Directives
+  const titleTags = $('title');
+  const titleCount = titleTags.length;
+  const title = titleTags.first().text().trim() || '';
+  
+  const metaDescTags = $('meta[name="description" i]');
+  const metaDescCount = metaDescTags.length;
+  const metaDescription = metaDescTags.first().attr('content')?.trim() || 
                           $('meta[property="og:description" i]').attr('content')?.trim() || '';
-  const metaRobots = $('meta[name="robots" i]').attr('content')?.trim() || 'index, follow';
-  const canonicalUrl = $('link[rel="canonical" i]').attr('href')?.trim() || '';
+  
+  const metaRobots = $('meta[name="robots" i]').attr('content')?.trim() || 
+                     responseHeaders['x-robots-tag'] || 'index, follow';
+  const isNoindex = /noindex/i.test(metaRobots);
+  const isNofollow = /nofollow/i.test(metaRobots);
+
+  const canonicalTags = $('link[rel="canonical" i]');
+  const canonicalCount = canonicalTags.length;
+  const canonicalUrl = canonicalTags.first().attr('href')?.trim() || '';
+  
   const language = $('html').attr('lang') || '';
-  const charset = $('meta[charset]').attr('charset') || $('meta[http-equiv="Content-Type" i]').attr('content') || 'UTF-8';
+  const charset = $('meta[charset]').attr('charset') || 
+                  $('meta[http-equiv="Content-Type" i]').attr('content') || 
+                  (responseHeaders['content-type']?.includes('charset') ? responseHeaders['content-type'] : '');
   const viewport = $('meta[name="viewport" i]').attr('content') || '';
 
-  // Open Graph
+  // Open Graph & Twitter
   const ogTitle = $('meta[property="og:title" i]').attr('content') || title;
   const ogDesc = $('meta[property="og:description" i]').attr('content') || metaDescription;
   const ogImage = $('meta[property="og:image" i]').attr('content') || '';
+  const twitterCard = $('meta[name="twitter:card" i]').attr('content') || '';
 
   // Headings
   const headings = { h1: [], h2: [], h3: [], h4: [], h5: [], h6: [] };
@@ -333,7 +496,10 @@ async function auditSinglePage(targetUrl, referringPage = null, depth = 0) {
   $content('script, style, noscript, nav, footer, header, svg, select, option').remove();
   const bodyText = $content('body').text().replace(/\s+/g, ' ').trim();
   const wordCount = bodyText ? bodyText.split(/\s+/).length : 0;
-  const htmlSizeKb = (Buffer.byteLength(html, 'utf8') / 1024).toFixed(1);
+  const rawHtmlBytes = Buffer.byteLength(html, 'utf8');
+  const htmlSizeKb = (rawHtmlBytes / 1024).toFixed(1);
+  const textBytes = Buffer.byteLength(bodyText, 'utf8');
+  const textToHtmlRatio = rawHtmlBytes > 0 ? ((textBytes / rawHtmlBytes) * 100).toFixed(1) : 0;
   const readability = calculateReadability(bodyText);
   const keywords = extractKeywords(bodyText);
 
@@ -341,12 +507,16 @@ async function auditSinglePage(targetUrl, referringPage = null, depth = 0) {
   const images = [];
   const missingAltList = [];
   let imagesWithoutAlt = 0;
+  let imagesWithEmptyAlt = 0;
+  let imagesWithLongAlt = 0;
 
   const $original = cheerio.load(html);
   $original('img').each((i, el) => {
     const src = $original(el).attr('src') || $original(el).attr('data-src') || $original(el).attr('data-lazy-src') || '';
     const alt = $original(el).attr('alt');
-    const hasAlt = alt !== undefined && alt.trim().length > 0;
+    const hasAlt = alt !== undefined && alt !== null;
+    const isAltEmpty = hasAlt && alt.trim().length === 0;
+    const isAltMissing = !hasAlt;
 
     if (src) {
       let resolvedSrc = src;
@@ -360,16 +530,19 @@ async function auditSinglePage(targetUrl, referringPage = null, depth = 0) {
         src: resolvedSrc,
         rawSrc: src,
         alt: alt || '',
-        hasAlt,
+        hasAlt: hasAlt && !isAltEmpty,
+        isAltEmpty,
         suggestedAlt,
-        htmlSnippet: `<img src="${src}" alt="${hasAlt ? alt : suggestedAlt}" />`
+        htmlSnippet: `<img src="${src}" alt="${hasAlt && !isAltEmpty ? alt : suggestedAlt}" />`
       };
 
-      if (!hasAlt) {
+      if (isAltMissing) {
         imagesWithoutAlt++;
-        if (missingAltList.length < 50) {
-          missingAltList.push(imgData);
-        }
+        if (missingAltList.length < 50) missingAltList.push(imgData);
+      } else if (isAltEmpty) {
+        imagesWithEmptyAlt++;
+      } else if (alt && alt.length > 125) {
+        imagesWithLongAlt++;
       }
 
       if (images.length < 80) {
@@ -378,34 +551,41 @@ async function auditSinglePage(targetUrl, referringPage = null, depth = 0) {
     }
   });
 
-  // Links
+  // Links & Anchors
   const discoveredInternal = new Set();
   const discoveredExternal = new Set();
   let internalLinksCount = 0;
   let externalLinksCount = 0;
-  let nofollowCount = 0;
+  let nofollowInternalCount = 0;
+  let genericAnchorCount = 0;
+  const genericTerms = ['click here', 'read more', 'learn more', 'here', 'link', 'more', 'view', 'website'];
 
   $original('a').each((i, el) => {
     const href = $original(el).attr('href')?.trim();
     const rel = $original(el).attr('rel') || '';
+    const anchorText = $original(el).text().trim().toLowerCase();
+
     if (href && !href.startsWith('javascript:') && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
       try {
         const resolved = new URL(href, targetUrl);
         resolved.hash = '';
         const resolvedUrl = resolved.toString();
         const isInternal = resolved.hostname === domain || resolved.hostname.endsWith('.' + domain);
-        const isNofollow = rel.toLowerCase().includes('nofollow');
-
-        if (isNofollow) nofollowCount++;
+        const isNofollowRel = rel.toLowerCase().includes('nofollow');
 
         if (isInternal) {
           internalLinksCount++;
+          if (isNofollowRel) nofollowInternalCount++;
           if (!/\.(pdf|zip|jpg|jpeg|png|gif|svg|webp|css|js|mp4|mp3|exe|tar|gz)$/i.test(resolved.pathname)) {
             discoveredInternal.add(resolvedUrl);
           }
         } else {
           externalLinksCount++;
           discoveredExternal.add(resolvedUrl);
+        }
+
+        if (genericTerms.includes(anchorText) || (anchorText === '' && !$original(el).find('img').length)) {
+          genericAnchorCount++;
         }
       } catch (e) {}
     }
@@ -420,151 +600,480 @@ async function auditSinglePage(targetUrl, referringPage = null, depth = 0) {
     } catch (e) {}
   });
 
-  // Issues & Score
+  // Mixed Content Check on HTTPS
+  let mixedContentAssets = [];
+  if (isHttps) {
+    $original('img[src^="http://"], script[src^="http://"], link[href^="http://"], iframe[src^="http://"]').each((i, el) => {
+      const mixedUrl = $(el).attr('src') || $(el).attr('href');
+      if (mixedUrl && mixedContentAssets.length < 5) mixedContentAssets.push(mixedUrl);
+    });
+  }
+
+  // Security Headers
+  const hasHsts = !!responseHeaders['strict-transport-security'];
+  const hasXContentType = !!responseHeaders['x-content-type-options'];
+  const hasXFrame = !!responseHeaders['x-frame-options'];
+
+  // Issues & Score Engine (Ahrefs Standardized Suite)
   const issues = [];
   let score = 100;
 
-  if (statusCode >= 400) {
+  // 1. HTTP Status & Indexability
+  if (statusCode >= 400 && statusCode < 500) {
     issues.push({
       category: 'Indexability',
       severity: 'Critical',
-      title: `HTTP ${statusCode} Error Page`,
-      description: `Page returned HTTP error status ${statusCode}.`,
-      recommendation: 'Fix broken URL or configure 301 redirect to relevant active page.'
+      title: `4xx Client Error (HTTP ${statusCode})`,
+      description: `Page returned client error HTTP status ${statusCode}. It cannot be indexed by search engines.`,
+      recommendation: 'Fix the broken link or configure a permanent 301 redirect to a relevant live page.'
+    });
+    score -= 50;
+  } else if (statusCode >= 500) {
+    issues.push({
+      category: 'Indexability',
+      severity: 'Critical',
+      title: `5xx Server Error (HTTP ${statusCode})`,
+      description: `Server failed to respond properly (HTTP ${statusCode}).`,
+      recommendation: 'Check backend server error logs, database connections, and upstream proxies.'
     });
     score -= 60;
+  } else if (isRedirect) {
+    issues.push({
+      category: 'Indexability',
+      severity: 'Warning',
+      title: `3xx Redirect (HTTP ${statusCode})`,
+      description: `Page redirects to another destination. Direct links to redirects add unnecessary latency.`,
+      recommendation: 'Update internal links to point directly to the final destination URL.'
+    });
+    score -= 5;
   }
 
+  if (isNoindex) {
+    issues.push({
+      category: 'Indexability',
+      severity: 'Warning',
+      title: 'Noindex Directive Found',
+      description: 'Page specifies a "noindex" robots meta directive, blocking search engines from indexing it.',
+      recommendation: 'If this page should rank on Google, remove the "noindex" directive.'
+    });
+    score -= 10;
+  }
+
+  // 2. Canonicalization
+  if (!canonicalUrl) {
+    issues.push({
+      category: 'Canonicalization',
+      severity: 'Warning',
+      title: 'Missing Canonical Tag',
+      description: 'Page is missing a rel="canonical" link tag, risking duplicate content dilution.',
+      recommendation: 'Add a self-referencing canonical tag `<link rel="canonical" href="..." />`.'
+    });
+    score -= 5;
+  } else if (canonicalCount > 1) {
+    issues.push({
+      category: 'Canonicalization',
+      severity: 'Critical',
+      title: 'Multiple Canonical Tags Found',
+      description: `Found ${canonicalCount} conflicting rel="canonical" link tags in the document head.`,
+      recommendation: 'Retain only one valid canonical tag per page.'
+    });
+    score -= 8;
+  } else {
+    try {
+      const canonicalObj = new URL(canonicalUrl, targetUrl);
+      if (canonicalObj.href !== targetUrl && !canonicalObj.href.endsWith('/') && canonicalObj.href + '/' !== targetUrl) {
+        issues.push({
+          category: 'Canonicalization',
+          severity: 'Warning',
+          title: 'Canonical URL Points to Different Page',
+          description: `Canonical points to ${canonicalObj.href} instead of self.`,
+          recommendation: 'Verify that canonical points to the preferred version of this content.'
+        });
+      }
+    } catch (e) {}
+  }
+
+  // 3. Page Titles
   if (!title) {
     issues.push({
       category: 'Meta & On-Page',
       severity: 'Critical',
       title: 'Missing Title Tag',
-      description: 'The page has no title tag.',
-      recommendation: 'Add a descriptive title tag between 50-60 characters.'
+      description: 'Page has no title tag in the head section.',
+      recommendation: 'Add a concise, keyword-rich title tag between 50-60 characters.'
     });
     score -= 18;
+  } else if (titleCount > 1) {
+    issues.push({
+      category: 'Meta & On-Page',
+      severity: 'Critical',
+      title: 'Multiple Title Tags Found',
+      description: `Found ${titleCount} <title> tags in head. Search engines will arbitrarily choose one.`,
+      recommendation: 'Remove duplicate <title> tags so only one primary title remains.'
+    });
+    score -= 6;
   } else if (title.length < 30) {
     issues.push({
       category: 'Meta & On-Page',
       severity: 'Warning',
       title: 'Title Tag Too Short',
-      description: `Title is only ${title.length} characters long.`,
-      recommendation: 'Expand title with relevant keywords.'
+      description: `Title tag has only ${title.length} characters (recommended 50-60).`,
+      recommendation: 'Expand the title to provide full topical context and brand keywords.'
     });
-    score -= 5;
+    score -= 4;
   } else if (title.length > 60) {
     issues.push({
       category: 'Meta & On-Page',
       severity: 'Warning',
       title: 'Title Tag Truncated in SERPs',
-      description: `Title is ${title.length} characters (exceeds 60 characters).`,
-      recommendation: 'Trim title under 60 characters.'
+      description: `Title is ${title.length} characters long and will be truncated on Google Search results.`,
+      recommendation: 'Trim title length to stay within 50-60 characters (under 580px pixel width).'
     });
-    score -= 4;
+    score -= 3;
   } else {
     issues.push({
       category: 'Meta & On-Page',
       severity: 'Passed',
       title: 'Optimal Title Tag Length',
-      description: `Title is ${title.length} characters.`,
-      recommendation: 'Maintain title keyword relevance.'
+      description: `Title is ${title.length} characters (perfect 50-60 char range).`,
+      recommendation: 'Keep monitoring title CTR in Search Console.'
     });
   }
 
+  // 4. Meta Descriptions
   if (!metaDescription) {
     issues.push({
       category: 'Meta & On-Page',
       severity: 'Critical',
       title: 'Missing Meta Description',
-      description: 'Page has no meta description.',
-      recommendation: 'Provide a 120-160 character meta description with CTA.'
+      description: 'Page has no meta description. Search engines may display arbitrary snippets in SERPs.',
+      recommendation: 'Add a compelling 120-160 character meta description with a clear call-to-action.'
     });
-    score -= 14;
+    score -= 12;
+  } else if (metaDescCount > 1) {
+    issues.push({
+      category: 'Meta & On-Page',
+      severity: 'Warning',
+      title: 'Multiple Meta Descriptions Found',
+      description: `Found ${metaDescCount} meta description tags.`,
+      recommendation: 'Remove duplicate meta description tags.'
+    });
+    score -= 4;
   } else if (metaDescription.length < 70) {
     issues.push({
       category: 'Meta & On-Page',
       severity: 'Warning',
       title: 'Meta Description Too Short',
-      description: `Description is only ${metaDescription.length} characters.`,
-      recommendation: 'Expand to 120-160 characters.'
+      description: `Meta description is only ${metaDescription.length} characters (recommended 120-160).`,
+      recommendation: 'Provide more descriptive copy to increase click-through rates.'
     });
-    score -= 4;
+    score -= 3;
   } else if (metaDescription.length > 160) {
     issues.push({
       category: 'Meta & On-Page',
       severity: 'Warning',
       title: 'Meta Description Too Long',
-      description: `Description is ${metaDescription.length} characters.`,
-      recommendation: 'Trim to under 160 characters.'
+      description: `Meta description is ${metaDescription.length} characters and will be clipped on SERPs.`,
+      recommendation: 'Condense description under 160 characters.'
     });
     score -= 3;
   }
 
+  // 5. Headings
   if (headings.h1.length === 0) {
     issues.push({
       category: 'Content & Hierarchy',
       severity: 'Critical',
       title: 'Missing H1 Heading',
-      description: 'Page contains no <h1> tag.',
-      recommendation: 'Add exactly one <h1> tag representing the primary topic.'
+      description: 'Page contains no <h1> heading tag to establish primary content context.',
+      recommendation: 'Add exactly one descriptive <h1> tag matching the main topic of the page.'
     });
     score -= 10;
   } else if (headings.h1.length > 1) {
     issues.push({
       category: 'Content & Hierarchy',
       severity: 'Warning',
-      title: 'Multiple H1 Headings',
-      description: `Found ${headings.h1.length} <h1> tags on page.`,
-      recommendation: 'Use a single primary H1 and subheadings (H2/H3).'
+      title: 'Multiple H1 Headings Found',
+      description: `Found ${headings.h1.length} <h1> tags on the page.`,
+      recommendation: 'Use a single <h1> heading and structure subsections with <h2> and <h3> tags.'
     });
     score -= 4;
-  }
-
-  if (!canonicalUrl) {
+  } else if (headings.h1[0].length > 70) {
     issues.push({
-      category: 'Technical SEO',
+      category: 'Content & Hierarchy',
       severity: 'Warning',
-      title: 'Missing Canonical Tag',
-      description: 'No canonical URL link tag found.',
-      recommendation: 'Add canonical tag pointing to primary URL.'
+      title: 'H1 Heading Too Long',
+      description: `H1 heading is ${headings.h1[0].length} characters long.`,
+      recommendation: 'Keep H1 headings focused and concise (under 70 characters).'
     });
-    score -= 5;
+    score -= 2;
   }
 
+  if (wordCount > 350 && headings.h2.length === 0) {
+    issues.push({
+      category: 'Content & Hierarchy',
+      severity: 'Passed',
+      title: 'Missing Subheadings (No H2 tags)',
+      description: 'Long-form content lacks <h2> subheadings, reducing readability and structure.',
+      recommendation: 'Break long copy into structured sections with descriptive <h2> headings.'
+    });
+  }
+
+  // 6. Images & Media
   if (imagesWithoutAlt > 0) {
     issues.push({
       category: 'Image SEO',
       severity: imagesWithoutAlt > 3 ? 'Critical' : 'Warning',
       title: `${imagesWithoutAlt} Image(s) Missing Alt Text`,
-      description: 'Images without alt attributes hurt accessibility and image SEO.',
+      description: 'Images without alt attributes hurt accessibility (WCAG) and prevent Google Image ranking.',
       recommendation: 'Add descriptive alt attributes (see image list below).',
       missingImages: missingAltList
     });
     score -= Math.min(12, imagesWithoutAlt * 2);
   }
+  if (imagesWithEmptyAlt > 0) {
+    issues.push({
+      category: 'Image SEO',
+      severity: 'Passed',
+      title: `${imagesWithEmptyAlt} Image(s) with Empty Alt Attribute`,
+      description: 'Images have alt="" attributes. Ensure these are decorative only.',
+      recommendation: 'If images convey meaningful information, provide descriptive alt text.'
+    });
+  }
+  if (imagesWithLongAlt > 0) {
+    issues.push({
+      category: 'Image SEO',
+      severity: 'Warning',
+      title: `${imagesWithLongAlt} Image(s) with Excessive Alt Text`,
+      description: 'Alt attributes exceed 125 characters, which can look spammy to search bots.',
+      recommendation: 'Keep image alt text under 125 characters.'
+    });
+    score -= 2;
+  }
 
-  if (wordCount < 150) {
+  // 7. Content & Quality
+  if (wordCount < 180 && !isRedirect && statusCode < 400) {
     issues.push({
       category: 'Content & Quality',
       severity: 'Warning',
       title: 'Thin Content Detected',
-      description: `Page only has ${wordCount} words of text.`,
-      recommendation: 'Expand content depth.'
+      description: `Page has only ${wordCount} words of text content.`,
+      recommendation: 'Expand content with comprehensive explanations, FAQs, and topic depth.'
     });
     score -= 8;
   }
 
+  if (parseFloat(textToHtmlRatio) < 8.0 && rawHtmlBytes > 15000) {
+    issues.push({
+      category: 'Content & Quality',
+      severity: 'Warning',
+      title: 'Low Text-to-HTML Ratio',
+      description: `Text content represents only ${textToHtmlRatio}% of the page size (${htmlSizeKb} KB HTML).`,
+      recommendation: 'Clean up inline scripts, excessive markup, and bloated CSS to improve crawl efficiency.'
+    });
+    score -= 4;
+  }
+
+  if (!language) {
+    issues.push({
+      category: 'Content & Quality',
+      severity: 'Warning',
+      title: 'Missing HTML lang Attribute',
+      description: 'The <html> element has no lang attribute (e.g. lang="en").',
+      recommendation: 'Add lang="en" (or appropriate language code) to the <html> tag.'
+    });
+    score -= 3;
+  }
+
+  if (!viewport) {
+    issues.push({
+      category: 'Technical SEO',
+      severity: 'Critical',
+      title: 'Missing Viewport Meta Tag (Mobile SEO)',
+      description: 'No viewport meta tag found. The page will not render properly on mobile devices.',
+      recommendation: 'Add `<meta name="viewport" content="width=device-width, initial-scale=1">` to <head>.'
+    });
+    score -= 10;
+  }
+
+  if (!charset) {
+    issues.push({
+      category: 'Technical SEO',
+      severity: 'Warning',
+      title: 'Missing Character Encoding (Charset)',
+      description: 'No character encoding declaration was detected.',
+      recommendation: 'Declare `<meta charset="UTF-8">` at the top of the <head> tag.'
+    });
+    score -= 2;
+  }
+
+  // 8. Social & Meta Tags
+  if (!ogTitle || !ogImage) {
+    issues.push({
+      category: 'Social & Meta',
+      severity: 'Warning',
+      title: 'Incomplete Open Graph Metadata',
+      description: `Missing key Open Graph tags (${!ogTitle ? 'og:title ' : ''}${!ogImage ? 'og:image' : ''}).`,
+      recommendation: 'Add full Open Graph tags for optimal social sharing previews.'
+    });
+    score -= 3;
+  }
+
+  if (!twitterCard) {
+    issues.push({
+      category: 'Social & Meta',
+      severity: 'Passed',
+      title: 'Missing Twitter Card Tags',
+      description: 'Page lacks twitter:card and twitter:title meta tags.',
+      recommendation: 'Add `<meta name="twitter:card" content="summary_large_image">`.'
+    });
+  }
+
+  // 9. Links & Navigation
+  if (internalLinksCount + externalLinksCount > 250) {
+    issues.push({
+      category: 'Links & Architecture',
+      severity: 'Warning',
+      title: 'Excessive On-Page Links (> 250 links)',
+      description: `Page contains ${internalLinksCount + externalLinksCount} links, diluting PageRank equity.`,
+      recommendation: 'Reduce link count and prioritize high-value navigational paths.'
+    });
+    score -= 3;
+  }
+
+  if (nofollowInternalCount > 0) {
+    issues.push({
+      category: 'Links & Architecture',
+      severity: 'Warning',
+      title: `${nofollowInternalCount} Internal Link(s) with Nofollow Attribute`,
+      description: 'Internal links are marked with rel="nofollow", which disrupts PageRank flow.',
+      recommendation: 'Remove rel="nofollow" from internal navigation links.'
+    });
+    score -= 2;
+  }
+
+  if (genericAnchorCount > 2) {
+    issues.push({
+      category: 'Links & Architecture',
+      severity: 'Warning',
+      title: `${genericAnchorCount} Generic Link Anchor(s)`,
+      description: 'Links use non-descriptive anchor text like "click here", "read more", or empty text.',
+      recommendation: 'Use descriptive, keyword-relevant anchor text explaining the destination.'
+    });
+    score -= 2;
+  }
+
+  // 10. Security & HTTPS
   if (!isHttps) {
     issues.push({
       category: 'Security',
       severity: 'Critical',
       title: 'Unsecured HTTP Protocol',
-      description: 'Page is served over plain HTTP.',
-      recommendation: 'Enforce HTTPS redirect.'
+      description: 'Page is served over unencrypted plain HTTP instead of HTTPS.',
+      recommendation: 'Install an SSL certificate and enforce permanent 301 HTTPS redirects.'
     });
     score -= 20;
   }
+
+  if (mixedContentAssets.length > 0) {
+    issues.push({
+      category: 'Security',
+      severity: 'Critical',
+      title: 'Mixed Content Detected',
+      description: `Page is on HTTPS but requests ${mixedContentAssets.length} insecure HTTP resources.`,
+      recommendation: 'Update all image, script, and stylesheet URLs to use HTTPS.'
+    });
+    score -= 10;
+  }
+
+  if (isHttps && !hasHsts) {
+    issues.push({
+      category: 'Security',
+      severity: 'Passed',
+      title: 'Missing HSTS Header',
+      description: 'HTTP Strict-Transport-Security header is not present.',
+      recommendation: 'Configure HSTS response header: Strict-Transport-Security: max-age=31536000; includeSubDomains.'
+    });
+  }
+
+  // 11. Performance
+  if (ttfb > 600) {
+    issues.push({
+      category: 'Performance',
+      severity: 'Warning',
+      title: 'High Server Response Time (TTFB > 600ms)',
+      description: `Time to First Byte was ${ttfb}ms (Google recommends TTFB under 200-500ms).`,
+      recommendation: 'Leverage server caching, edge CDN caching, and optimize database queries.'
+    });
+    score -= 5;
+  }
+
+  if (totalTime > 2000) {
+    issues.push({
+      category: 'Performance',
+      severity: 'Warning',
+      title: 'Slow Total Page Load Time (> 2.0s)',
+      description: `Initial HTML fetch completed in ${(totalTime / 1000).toFixed(2)}s.`,
+      recommendation: 'Optimize server response time and page assets.'
+    });
+    score -= 4;
+  }
+
+  if (parseFloat(htmlSizeKb) > 100) {
+    issues.push({
+      category: 'Performance',
+      severity: 'Warning',
+      title: 'Large HTML Document Size (> 100 KB)',
+      description: `HTML payload is ${htmlSizeKb} KB. Large HTML payloads delay parsing and rendering.`,
+      recommendation: 'Minify HTML and extract inline SVG / CSS into external cached files.'
+    });
+    score -= 3;
+  }
+
+  // 12. Structured Data
+  if (schemas.length === 0) {
+    issues.push({
+      category: 'Structured Data',
+      severity: 'Passed',
+      title: 'No Schema.org Structured Data Found',
+      description: 'No JSON-LD structured data detected on this page.',
+      recommendation: 'Implement Schema.org JSON-LD markup (e.g. Article, Organization, Product, BreadcrumbList).'
+    });
+  }
+
+  // 13. URL Architecture
+  try {
+    const urlObj = new URL(targetUrl);
+    if (/[A-Z]/.test(urlObj.pathname)) {
+      issues.push({
+        category: 'URL Architecture',
+        severity: 'Warning',
+        title: 'URL Contains Uppercase Characters',
+        description: 'URL contains uppercase letters, which can cause duplicate indexation on case-sensitive servers.',
+        recommendation: 'Use all-lowercase characters in URL paths.'
+      });
+      score -= 2;
+    }
+    if (urlObj.pathname.includes('_')) {
+      issues.push({
+        category: 'URL Architecture',
+        severity: 'Passed',
+        title: 'URL Contains Underscores Instead of Hyphens',
+        description: 'Google recommends using hyphens (-) rather than underscores (_) as word separators in URLs.',
+        recommendation: 'Replace underscores with hyphens in URL slug structure.'
+      });
+    }
+    if (targetUrl.length > 100) {
+      issues.push({
+        category: 'URL Architecture',
+        severity: 'Warning',
+        title: 'Excessive URL Length (> 100 chars)',
+        description: `URL is ${targetUrl.length} characters long. Short URLs improve user experience and CTR.`,
+        recommendation: 'Keep URL paths concise and meaningful.'
+      });
+      score -= 2;
+    }
+  } catch (e) {}
 
   const finalScore = Math.max(10, Math.min(100, Math.round(score)));
 
@@ -591,24 +1100,28 @@ async function auditSinglePage(targetUrl, referringPage = null, depth = 0) {
       charset,
       viewport
     },
-    social: { ogTitle, ogDesc, ogImage },
+    social: { ogTitle, ogDesc, ogImage, twitterCard },
     headings,
     content: {
       wordCount,
       htmlSizeKb,
+      textToHtmlRatio,
       readability,
       keywords
     },
     images: {
       total: $original('img').length,
       missingAlt: imagesWithoutAlt,
+      emptyAlt: imagesWithEmptyAlt,
+      longAlt: imagesWithLongAlt,
       missingAltList,
       list: images
     },
     links: {
       internalCount: internalLinksCount,
       externalCount: externalLinksCount,
-      nofollowCount,
+      nofollowCount: nofollowInternalCount,
+      genericAnchorCount,
       discoveredInternal: Array.from(discoveredInternal),
       discoveredExternal: Array.from(discoveredExternal)
     },
@@ -837,28 +1350,7 @@ app.get('/api/crawl-stream', async (req, res) => {
     });
   });
 
-  const siteIssuesMap = {};
-  crawledPages.forEach(page => {
-    (page.issues || []).forEach(issue => {
-      const key = `${issue.severity}::${issue.title}`;
-      if (!siteIssuesMap[key]) {
-        siteIssuesMap[key] = {
-          title: issue.title,
-          category: issue.category,
-          severity: issue.severity,
-          description: issue.description,
-          recommendation: issue.recommendation,
-          affectedUrls: []
-        };
-      }
-      siteIssuesMap[key].affectedUrls.push(page.url);
-    });
-  });
-
-  const aggregateIssues = Object.values(siteIssuesMap).sort((a, b) => {
-    const sevWeight = { 'Critical': 3, 'Warning': 2, 'Passed': 1 };
-    return (sevWeight[b.severity] || 0) - (sevWeight[a.severity] || 0) || b.affectedUrls.length - a.affectedUrls.length;
-  });
+  const aggregateIssues = generateAggregateIssues(crawledPages);
 
   const allDiscoveredList = Array.from(discoveredAllUrls).map(u => ({
     url: u,
@@ -1048,28 +1540,7 @@ async function runSiteCrawlEngine({ inputTarget, maxPages = 250, maxDepth = 4, o
     });
   });
 
-  const siteIssuesMap = {};
-  crawledPages.forEach(page => {
-    (page.issues || []).forEach(issue => {
-      const key = `${issue.severity}::${issue.title}`;
-      if (!siteIssuesMap[key]) {
-        siteIssuesMap[key] = {
-          title: issue.title,
-          category: issue.category,
-          severity: issue.severity,
-          description: issue.description,
-          recommendation: issue.recommendation,
-          affectedUrls: []
-        };
-      }
-      siteIssuesMap[key].affectedUrls.push(page.url);
-    });
-  });
-
-  const aggregateIssues = Object.values(siteIssuesMap).sort((a, b) => {
-    const sevWeight = { 'Critical': 3, 'Warning': 2, 'Passed': 1 };
-    return (sevWeight[b.severity] || 0) - (sevWeight[a.severity] || 0) || b.affectedUrls.length - a.affectedUrls.length;
-  });
+  const aggregateIssues = generateAggregateIssues(crawledPages);
 
   const allDiscoveredList = Array.from(discoveredAllUrls).map(u => ({
     url: u,
