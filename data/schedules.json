@@ -1,18 +1,1 @@
-[
-  {
-    "id": "sch_1790803540051_jiln",
-    "userId": "guest",
-    "name": "Auto Audit: example.com",
-    "targetUrl": "https://example.com/",
-    "frequency": "1h",
-    "intervalMinutes": 60,
-    "maxPages": 10,
-    "maxDepth": 4,
-    "active": true,
-    "createdAt": "2026-09-30T21:25:40.051Z",
-    "lastRun": null,
-    "nextRun": "2026-09-30T22:25:40.051Z",
-    "lastScore": null,
-    "lastStatus": "Running Background Audit..."
-  }
-]
+[]
