@@ -222,6 +222,98 @@ export default function App() {
     fetchSchedules();
   }, []);
 
+  // Central Navigation & URL Routing System (Deep-Linking)
+  const navigateTo = (tab, options = {}) => {
+    setActiveTab(tab);
+    let path = `/${tab}`;
+    if (tab === 'overview') path = '/overview';
+    if (tab === 'discovered-urls') path = '/link-explorer';
+
+    if (options.category) {
+      setIssueCategoryFilter(options.category);
+      const catSlug = options.category.toLowerCase().replace(/[^a-z0-9]/g, '-');
+      path = `/reports/${catSlug}`;
+    }
+    if (options.issue) {
+      setSelectedIssueModal(options.issue);
+      path = `/issue?title=${encodeURIComponent(options.issue.title)}`;
+    }
+    if (options.pageUrl) {
+      path = `/inspect?url=${encodeURIComponent(options.pageUrl)}`;
+    }
+
+    try {
+      if (window.location.pathname + window.location.search !== path) {
+        window.history.pushState(null, '', path);
+      }
+    } catch (e) {}
+  };
+
+  // Synchronize Browser Address Bar & Handle Deep-Links / Back-Forward Navigation
+  useEffect(() => {
+    const handleUrlRoute = () => {
+      const pathname = window.location.pathname.toLowerCase();
+      const params = new URLSearchParams(window.location.search);
+
+      if (pathname === '/all-issues' || pathname.startsWith('/all-issues')) {
+        setActiveTab('all-issues');
+      } else if (pathname === '/page-explorer' || pathname === '/pages') {
+        setActiveTab('page-explorer');
+      } else if (pathname === '/missing-alts' || pathname === '/images') {
+        setActiveTab('missing-alts');
+      } else if (pathname === '/link-explorer' || pathname === '/links' || pathname === '/discovered-urls') {
+        setActiveTab('discovered-urls');
+      } else if (pathname === '/structure-explorer' || pathname === '/structure') {
+        setActiveTab('structure-explorer');
+      } else if (pathname === '/crawl-log' || pathname === '/logs') {
+        setActiveTab('crawl-log');
+      } else if (pathname.startsWith('/reports/')) {
+        const reportSlug = pathname.replace('/reports/', '');
+        const reportMap = {
+          'internal-pages': 'Internal pages',
+          'internal': 'Internal pages',
+          'indexability': 'Indexability',
+          'links': 'Links',
+          'redirects': 'Redirects',
+          'content': 'Content',
+          'social-tags': 'Social tags',
+          'social': 'Social tags',
+          'duplicates': 'Duplicates',
+          'performance': 'Performance',
+          'images': 'Images',
+          'external-pages': 'External pages',
+          'external': 'External pages'
+        };
+        const matchedCategory = reportMap[reportSlug];
+        setActiveTab('all-issues');
+        if (matchedCategory) setIssueCategoryFilter(matchedCategory);
+      } else if (pathname === '/issue') {
+        const issueTitle = params.get('title');
+        if (issueTitle && siteData?.aggregateIssues) {
+          const found = siteData.aggregateIssues.find(i => i.title.toLowerCase() === issueTitle.toLowerCase());
+          if (found) setSelectedIssueModal(found);
+        }
+      } else if (pathname === '/inspect') {
+        const pageUrl = params.get('url');
+        if (pageUrl && siteData?.pages) {
+          const foundP = siteData.pages.find(p => p.url === pageUrl);
+          if (foundP) setSelectedPageModal(foundP);
+        }
+      } else if (pathname === '/history') {
+        setHistoryModalOpen(true);
+      } else if (pathname === '/schedules') {
+        setSchedulesModalOpen(true);
+      } else {
+        // Default to overview for '/' or '/overview'
+        setActiveTab('overview');
+      }
+    };
+
+    handleUrlRoute();
+    window.addEventListener('popstate', handleUrlRoute);
+    return () => window.removeEventListener('popstate', handleUrlRoute);
+  }, [siteData]);
+
   // Auto-scroll logs
   useEffect(() => {
     if (autoScroll && logContainerRef.current) {
@@ -1014,7 +1106,7 @@ export default function App() {
         <div style={{ padding: '10px 0' }}>
           <div
             className={`ahrefs-nav-item ${activeTab === 'overview' ? 'active' : ''}`}
-            onClick={() => setActiveTab('overview')}
+            onClick={() => navigateTo('overview')}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <LayoutDashboard size={16} />
@@ -1023,8 +1115,8 @@ export default function App() {
           </div>
 
           <div
-            className={`ahrefs-nav-item ${activeTab === 'all-issues' ? 'active' : ''}`}
-            onClick={() => { setActiveTab('all-issues'); setIssueCategoryFilter('All'); }}
+            className={`ahrefs-nav-item ${activeTab === 'all-issues' && issueCategoryFilter === 'all' ? 'active' : ''}`}
+            onClick={() => navigateTo('all-issues', { category: 'all' })}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <AlertOctagon size={16} />
@@ -1037,7 +1129,7 @@ export default function App() {
             )}
           </div>
 
-          <div className="ahrefs-nav-item" onClick={() => setActiveTab('overview')}>
+          <div className="ahrefs-nav-item" onClick={() => navigateTo('overview')}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <Bell size={16} />
               <span>Alerts</span>
@@ -1056,7 +1148,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="ahrefs-nav-item" onClick={() => setHistoryModalOpen(true)}>
+          <div className="ahrefs-nav-item" onClick={() => { setHistoryModalOpen(true); try { window.history.pushState(null, '', '/history'); } catch(e){} }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <HistoryIcon size={16} />
               <span>Project history</span>
@@ -1066,7 +1158,7 @@ export default function App() {
             </span>
           </div>
 
-          <div className="ahrefs-nav-item" onClick={() => setActiveTab('crawl-log')}>
+          <div className="ahrefs-nav-item" onClick={() => navigateTo('crawl-log')}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <Terminal size={16} />
               <span>Crawl log</span>
@@ -1079,7 +1171,7 @@ export default function App() {
         <div>
           <div
             className={`ahrefs-nav-item ${activeTab === 'page-explorer' ? 'active' : ''}`}
-            onClick={() => setActiveTab('page-explorer')}
+            onClick={() => navigateTo('page-explorer')}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <Database size={16} />
@@ -1092,7 +1184,7 @@ export default function App() {
 
           <div
             className={`ahrefs-nav-item ${activeTab === 'missing-alts' ? 'active' : ''}`}
-            onClick={() => setActiveTab('missing-alts')}
+            onClick={() => navigateTo('missing-alts')}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <ImageIcon size={16} color="#f87171" />
@@ -1105,7 +1197,7 @@ export default function App() {
 
           <div
             className={`ahrefs-nav-item ${activeTab === 'discovered-urls' ? 'active' : ''}`}
-            onClick={() => setActiveTab('discovered-urls')}
+            onClick={() => navigateTo('discovered-urls')}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <Link2 size={16} />
@@ -1115,7 +1207,7 @@ export default function App() {
 
           <div
             className={`ahrefs-nav-item ${activeTab === 'structure-explorer' ? 'active' : ''}`}
-            onClick={() => setActiveTab('structure-explorer')}
+            onClick={() => navigateTo('structure-explorer')}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <Workflow size={16} />
@@ -1123,7 +1215,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="ahrefs-nav-item" onClick={() => setActiveTab('all-issues')}>
+          <div className="ahrefs-nav-item" onClick={() => navigateTo('all-issues')}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <Sparkles size={16} color="#a855f7" />
               <span>Patches ⚡</span>
@@ -1147,14 +1239,12 @@ export default function App() {
             { id: 'external', label: 'External pages' }
           ].map(r => {
             const count = getCategoryIssueCount(r.label);
+            const isSelected = activeTab === 'all-issues' && issueCategoryFilter.toLowerCase() === r.label.toLowerCase();
             return (
               <div
                 key={r.id}
-                className={`ahrefs-nav-item ${issueCategoryFilter.toLowerCase().includes(r.id) ? 'active' : ''}`}
-                onClick={() => {
-                  setActiveTab('all-issues');
-                  setIssueCategoryFilter(r.label);
-                }}
+                className={`ahrefs-nav-item ${isSelected ? 'active' : ''}`}
+                onClick={() => navigateTo('all-issues', { category: r.label })}
               >
                 <span>{r.label}</span>
                 {siteData && count > 0 && (
@@ -1692,7 +1782,7 @@ export default function App() {
                       {topOverviewIssues.map((row, idx) => (
                         <tr
                           key={idx}
-                          onClick={() => setSelectedIssueModal(row)}
+                          onClick={() => navigateTo(activeTab, { issue: row })}
                           style={{ cursor: 'pointer', transition: 'background 0.15s ease' }}
                           title="Click to view full issue details and affected URLs"
                         >
@@ -1709,7 +1799,7 @@ export default function App() {
                                 style={{ fontWeight: 600, color: '#f1f5f9', cursor: 'pointer' }}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setSelectedIssueModal(row);
+                                  navigateTo(activeTab, { issue: row });
                                 }}
                               >
                                 {row.title}
@@ -1751,7 +1841,7 @@ export default function App() {
                               style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setSelectedIssueModal(row);
+                                navigateTo(activeTab, { issue: row });
                               }}
                             >
                               <HelpCircle size={14} color="#64748b" style={{ cursor: 'pointer' }} title="View issue details and affected pages" />
@@ -2159,7 +2249,17 @@ export default function App() {
                 <span className="badge badge-info" style={{ marginBottom: '6px' }}>HTTP {selectedPageModal.statusCode}</span>
                 <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff', wordBreak: 'break-all' }}>{selectedPageModal.url}</h3>
               </div>
-              <button onClick={() => setSelectedPageModal(null)} className="btn-secondary" style={{ padding: '6px' }}>
+              <button
+                onClick={() => {
+                  setSelectedPageModal(null);
+                  try {
+                    const fallbackPath = activeTab === 'overview' ? '/overview' : `/${activeTab}`;
+                    window.history.pushState(null, '', fallbackPath);
+                  } catch (e) {}
+                }}
+                className="btn-secondary"
+                style={{ padding: '6px' }}
+              >
                 <X size={18} />
               </button>
             </div>
@@ -2225,7 +2325,14 @@ export default function App() {
               </div>
 
               <button
-                onClick={() => { setSelectedIssueModal(null); setIssueUrlSearch(''); }}
+                onClick={() => {
+                  setSelectedIssueModal(null);
+                  setIssueUrlSearch('');
+                  try {
+                    const fallbackPath = activeTab === 'overview' ? '/overview' : `/${activeTab}`;
+                    window.history.pushState(null, '', fallbackPath);
+                  } catch (e) {}
+                }}
                 className="btn-secondary"
                 style={{ padding: '6px' }}
               >
@@ -2362,7 +2469,7 @@ export default function App() {
                                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                                     {pageObj && (
                                       <button
-                                        onClick={() => setSelectedPageModal(pageObj)}
+                                        onClick={() => navigateTo(activeTab, { pageUrl: pageObj.url })}
                                         className="btn-secondary"
                                         style={{ padding: '4px 8px', fontSize: '0.72rem' }}
                                         title="Inspect full technical diagnostics"
@@ -2413,7 +2520,14 @@ export default function App() {
                 Real-time Issue Diagnostics · Click any URL to inspect on-page audits
               </span>
               <button
-                onClick={() => { setSelectedIssueModal(null); setIssueUrlSearch(''); }}
+                onClick={() => {
+                  setSelectedIssueModal(null);
+                  setIssueUrlSearch('');
+                  try {
+                    const fallbackPath = activeTab === 'overview' ? '/overview' : `/${activeTab}`;
+                    window.history.pushState(null, '', fallbackPath);
+                  } catch (e) {}
+                }}
                 className="btn-primary"
                 style={{ padding: '6px 18px', fontSize: '0.8rem' }}
               >
