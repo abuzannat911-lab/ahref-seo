@@ -743,8 +743,21 @@ export default function App() {
   // ==========================================
   // REAL-TIME LIVE AUDIT OVERVIEW CALCULATIONS
   // ==========================================
+  const getDomainSafe = (urlStr) => {
+    if (!urlStr) return 'domain.com';
+    try {
+      let formatted = urlStr.trim();
+      if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
+        formatted = 'https://' + formatted;
+      }
+      return new URL(formatted).hostname;
+    } catch {
+      return urlStr || 'domain.com';
+    }
+  };
+
   const activeScore = siteData ? siteData.siteHealthScore : 0;
-  const activeDomain = siteData ? siteData.domain : (urlInput ? new URL(normalizeUrl(urlInput)).hostname : 'domain.com');
+  const activeDomain = siteData ? siteData.domain : getDomainSafe(urlInput);
   
   // 1. Crawled URLs Distribution (Real Internal, External, and Media Resources)
   const realInternalCount = siteData ? siteData.pages.length : 0;
