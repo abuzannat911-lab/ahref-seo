@@ -1720,7 +1720,7 @@ app.get('/api/auth/me', (req, res) => {
 // ----------------------------------------------------
 app.get('/api/history', (req, res) => {
   const history = readJsonFile(HISTORY_FILE, []);
-  // Return list without bulky fullReport for fast table loading
+  // Return list with lightweight aggregate issues for real-time comparative diffs
   const summaryList = history.map(item => ({
     id: item.id,
     userId: item.userId,
@@ -1734,7 +1734,13 @@ app.get('/api/history', (req, res) => {
     criticalIssues: item.criticalIssues,
     durationMs: item.durationMs,
     timestamp: item.timestamp,
-    isAutoCrawl: item.isAutoCrawl || false
+    isAutoCrawl: item.isAutoCrawl || false,
+    aggregateIssues: (item.fullReport?.aggregateIssues || []).map(i => ({
+      title: i.title,
+      severity: i.severity,
+      category: i.category,
+      affectedUrls: i.affectedUrls || []
+    }))
   }));
   res.json(summaryList);
 });

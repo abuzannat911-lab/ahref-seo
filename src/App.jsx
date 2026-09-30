@@ -145,6 +145,8 @@ export default function App() {
   const [siteData, setSiteData] = useState(null);
   const [singleData, setSingleData] = useState(null);
   const [selectedPageModal, setSelectedPageModal] = useState(null);
+  const [selectedIssueModal, setSelectedIssueModal] = useState(null);
+  const [issueUrlSearch, setIssueUrlSearch] = useState('');
   const [modalImgTab, setModalImgTab] = useState('missing'); // 'missing' or 'all'
   const [error, setError] = useState(null);
   
@@ -816,18 +818,177 @@ export default function App() {
         score: siteData.siteHealthScore || 0
       }] : [];
 
-  // 6. Real Issues Table Rows
-  const topOverviewIssues = siteData ? (siteData.aggregateIssues || []).map(i => ({
-    severity: i.severity,
-    title: i.title,
-    crawled: i.affectedUrls?.length || 1,
-    change: i.affectedUrls?.length || 1,
-    added: Math.max(0, Math.floor((i.affectedUrls?.length || 1) * 0.4)),
-    newCount: i.severity === 'Critical' ? 1 : '—',
-    removed: '—',
-    missing: 0,
-    isNew: i.severity === 'Critical'
-  })) : [];
+  // 6. Real Issues Table Rows with Exact Real-Time Comparative Diffs
+  const previousAudit = (savedHistoryList && savedHistoryList.length > 0)
+    ? savedHistoryList.find(h => (h.domain === siteData?.domain || h.rootUrl === siteData?.rootUrl) && h.timestamp !== siteData?.crawlTimestamp)
+    : null;
+
+  const prevIssuesMap = {};
+  if (previousAudit && previousAudit.aggregateIssues) {
+    previousAudit.aggregateIssues.forEach(pi => {
+      prevIssuesMap[pi.title] = pi;
+    });
+  }
+
+  const rawOverviewIssues = siteData ? (siteData.aggregateIssues || []).map(i => {
+    const currentUrls = i.affectedUrls || [];
+    const prevIssue = prevIssuesMap[i.title];
+    const prevUrls = prevIssue ? (prevIssue.affectedUrls || []) : null;
+
+    let changeNum = 0;
+    let addedCount = 0;
+    let removedCount = 0;
+    let isBrandNew = false;
+
+    if (prevUrls !== null) {
+      const prevSet = new Set(prevUrls);
+      const currSet = new Set(currentUrls);
+      addedCount = currentUrls.filter(u => !prevSet.has(u)).length;
+      removedCount = prevUrls.filter(u => !currSet.has(u)).length;
+      changeNum = currentUrls.length - prevUrls.length;
+      isBrandNew = prevUrls.length === 0 && currentUrls.length > 0;
+    } else if (previousAudit) {
+      addedCount = currentUrls.length;
+      changeNum = currentUrls.length;
+      removedCount = 0;
+      isBrandNew = true;
+    } else {
+      // First baseline crawl: all issues are new discoveries
+      addedCount = currentUrls.length;
+      changeNum = currentUrls.length;
+      removedCount = 0;
+      isBrandNew = false;
+    }
+
+    return {
+      severity: i.severity,
+      category: i.category,
+      title: i.title,
+      description: i.description,
+      recommendation: i.recommendation,
+      affectedUrls: currentUrls,
+      crawled: currentUrls.length,
+      changeNum,
+      added: addedCount,
+      newCount: isBrandNew ? 1 : '—',
+      removed: removedCount > 0 ? removedCount : '—',
+      isNew: isBrandNew,
+      percentOfSite: siteData.pages?.length > 0 ? Math.round((currentUrls.length / siteData.pages.length) * 100) : 0
+    };
+  }) : [];
+
+  // Filter and sort for What's new vs Top Issues
+  const topOverviewIssues = [...rawOverviewIssues].sort((a, b) => {
+    if (overviewSubTab === 'whats-new') {
+      if (b.added !== a.added) return b.added - a.added;
+      if (Math.abs(b.changeNum) !== Math.abs(a.changeNum)) return Math.abs(b.changeNum) - Math.abs(a.changeNum);
+    }
+    const sevOrder = { Critical: 3, Warning: 2, Passed: 1 };
+    const sevDiff = (sevOrder[b.severity] || 0) - (sevOrder[a.severity] || 0);
+    if (sevDiff !== 0) return sevDiff;
+    return b.crawled - a.crawled;
+  });
+
+  const renderIssueContextForUrl = (issueTitle, pageObj) => {
+    if (!pageObj) return '—';
+    const lower = (issueTitle || '').toLowerCase();
+    if (lower.includes('open graph')) {
+      const missing = [];
+      if (!pageObj.social?.ogTitle) missing.push('og:title');
+      if (!pageObj.social?.ogImage) missing.push('og:image');
+      if (!pageObj.social?.ogDesc) missing.push('og:description');
+      return missing.length > 0 ? `Missing: ${missing.join(', ')}` : 'OG tags incomplete';
+    }
+    if (lower.includes('text-to-html')) {
+      return `Ratio: ${pageObj.content?.textToHtmlRatio}% (HTML: ${pageObj.content?.htmlSizeKb} KB)`;
+    }
+    if (lower.includes('anchor')) {
+      return `${pageObj.links?.genericAnchorCount || 0} non-descriptive anchor(s)`;
+    }
+    if (lower.includes('large html') || lower.includes('size')) {
+      return `Payload: ${pageObj.content?.htmlSizeKb} KB`;
+    }
+    if (lower.includes('ttfb') || lower.includes('server response')) {
+      return `TTFB: ${pageObj.ttfbMs} ms`;
+    }
+    if (lower.includes('load time')) {
+      return `Response Time: ${(pageObj.responseTimeMs / 1000).toFixed(2)}s`;
+    }
+    if (lower.includes('title tag too short') || lower.includes('title tag too long') || lower.includes('title tag truncated')) {
+      return `Title (${pageObj.meta?.titleLength} chars): "${(pageObj.meta?.title || '').substring(0, 30)}..."`;
+    }
+    if (lower.includes('missing title')) {
+      return 'Missing <title> tag';
+    }
+    if (lower.includes('missing canonical')) {
+      return pageObj.meta?.canonicalUrl ? `Canonical: ${pageObj.meta.canonicalUrl}` : 'No canonical declared';
+    }
+    if (lower.includes('meta description too short') || lower.includes('meta description too long')) {
+      return `Length: ${pageObj.meta?.metaDescriptionLength} chars`;
+    }
+    if (lower.includes('missing meta description')) {
+      return 'Missing <meta name="description">';
+    }
+    if (lower.includes('missing alt') || lower.includes('image')) {
+      return `${pageObj.images?.missingAlt || 0} image(s) missing alt`;
+    }
+    if (lower.includes('multiple h1')) {
+      return `${pageObj.headings?.h1?.length || 0} H1 tags detected`;
+    }
+    if (lower.includes('missing h1')) {
+      return 'No <h1> tag on page';
+    }
+    if (lower.includes('orphan')) {
+      return '0 incoming internal links found';
+    }
+    if (lower.includes('depth')) {
+      return `Click depth: ${pageObj.depth} clicks from root`;
+    }
+    if (lower.includes('links')) {
+      return `${pageObj.links?.internalCount || 0} internal, ${pageObj.links?.externalCount || 0} external`;
+    }
+    return pageObj.meta?.title ? `"${pageObj.meta.title.substring(0, 35)}..."` : '—';
+  };
+
+  const exportSingleIssueCSV = (issue) => {
+    if (!issue || !issue.affectedUrls) return;
+    const rows = [
+      ['Issue Title', 'Severity', 'Category', 'Affected URL', 'Status Code', 'Page Title', 'TTFB (ms)', 'Word Count']
+    ];
+    issue.affectedUrls.forEach(url => {
+      const p = siteData?.pages?.find(page => page.url === url);
+      rows.push([
+        `"${issue.title.replace(/"/g, '""')}"`,
+        `"${issue.severity}"`,
+        `"${issue.category || ''}"`,
+        `"${url}"`,
+        p?.statusCode || 200,
+        `"${(p?.meta?.title || '').replace(/"/g, '""')}"`,
+        p?.ttfbMs || 0,
+        p?.content?.wordCount || 0
+      ]);
+    });
+    const csvContent = 'data:text/csv;charset=utf-8,' + rows.map(e => e.join(',')).join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `${issue.title.toLowerCase().replace(/[^a-z0-9]/g, '_')}_urls.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const getCategoryIssueCount = (catName) => {
+    if (!siteData) return 0;
+    const cat = catName.toLowerCase();
+    if (cat.includes('internal')) return siteData.pages?.length || 0;
+    if (cat.includes('external')) return realExternalCount;
+    return (siteData.aggregateIssues || []).filter(i => {
+      const issueCat = (i.category || '').toLowerCase();
+      const issueTitle = (i.title || '').toLowerCase();
+      return issueCat.includes(cat) || issueTitle.includes(cat);
+    }).reduce((sum, i) => sum + (i.affectedUrls?.length || 1), 0);
+  };
 
   return (
     <div className="ahrefs-app-container">
@@ -843,7 +1004,7 @@ export default function App() {
           </div>
           <div style={{ overflow: 'hidden' }}>
             <div style={{ fontSize: '0.86rem', fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {activeDomain}
+              {siteData ? activeDomain : (urlInput ? activeDomain : 'Ready for Audit')}
             </div>
             <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Site Audit Pro</div>
           </div>
@@ -863,15 +1024,17 @@ export default function App() {
 
           <div
             className={`ahrefs-nav-item ${activeTab === 'all-issues' ? 'active' : ''}`}
-            onClick={() => setActiveTab('all-issues')}
+            onClick={() => { setActiveTab('all-issues'); setIssueCategoryFilter('All'); }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <AlertOctagon size={16} />
               <span>All issues</span>
             </div>
-            <span style={{ background: '#ef4444', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '1px 7px', borderRadius: '10px' }}>
-              {issuesDist.errors || 12}
-            </span>
+            {issuesDist.errors > 0 && (
+              <span style={{ background: '#ef4444', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '1px 7px', borderRadius: '10px' }}>
+                {issuesDist.errors}
+              </span>
+            )}
           </div>
 
           <div className="ahrefs-nav-item" onClick={() => setActiveTab('overview')}>
@@ -879,9 +1042,11 @@ export default function App() {
               <Bell size={16} />
               <span>Alerts</span>
             </div>
-            <span style={{ background: '#f59e0b', color: '#000', fontSize: '0.65rem', fontWeight: 800, padding: '1px 5px', borderRadius: '4px' }}>
-              New
-            </span>
+            {issuesDist.errors > 0 && (
+              <span style={{ background: '#f59e0b', color: '#000', fontSize: '0.65rem', fontWeight: 800, padding: '1px 5px', borderRadius: '4px' }}>
+                New
+              </span>
+            )}
           </div>
 
           <div className="ahrefs-nav-item" onClick={exportAllPagesCSV}>
@@ -921,7 +1086,7 @@ export default function App() {
               <span>Page explorer</span>
             </div>
             <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
-              {siteData?.pages?.length || 643}
+              {siteData?.pages?.length ?? 0}
             </span>
           </div>
 
@@ -934,7 +1099,7 @@ export default function App() {
               <span>Missing Image ALTs</span>
             </div>
             <span style={{ color: '#f87171', fontSize: '0.72rem', fontWeight: 700 }}>
-              {siteData?.allMissingAltImages?.length || 0}
+              {siteData?.allMissingAltImages?.length ?? 0}
             </span>
           </div>
 
@@ -958,7 +1123,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="ahrefs-nav-item">
+          <div className="ahrefs-nav-item" onClick={() => setActiveTab('all-issues')}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <Sparkles size={16} color="#a855f7" />
               <span>Patches ⚡</span>
@@ -980,18 +1145,26 @@ export default function App() {
             { id: 'performance', label: 'Performance' },
             { id: 'images', label: 'Images' },
             { id: 'external', label: 'External pages' }
-          ].map(r => (
-            <div
-              key={r.id}
-              className={`ahrefs-nav-item ${issueCategoryFilter.toLowerCase().includes(r.id) ? 'active' : ''}`}
-              onClick={() => {
-                setActiveTab('all-issues');
-                setIssueCategoryFilter(r.label);
-              }}
-            >
-              <span>{r.label}</span>
-            </div>
-          ))}
+          ].map(r => {
+            const count = getCategoryIssueCount(r.label);
+            return (
+              <div
+                key={r.id}
+                className={`ahrefs-nav-item ${issueCategoryFilter.toLowerCase().includes(r.id) ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveTab('all-issues');
+                  setIssueCategoryFilter(r.label);
+                }}
+              >
+                <span>{r.label}</span>
+                {siteData && count > 0 && (
+                  <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#64748b' }}>
+                    {count}
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       </aside>
 
@@ -1517,7 +1690,12 @@ export default function App() {
                     </thead>
                     <tbody>
                       {topOverviewIssues.map((row, idx) => (
-                        <tr key={idx}>
+                        <tr
+                          key={idx}
+                          onClick={() => setSelectedIssueModal(row)}
+                          style={{ cursor: 'pointer', transition: 'background 0.15s ease' }}
+                          title="Click to view full issue details and affected URLs"
+                        >
                           <td>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                               {row.severity === 'Critical' ? (
@@ -1528,11 +1706,11 @@ export default function App() {
                                 <Info size={15} color="#38bdf8" />
                               )}
                               <span
-                                onClick={() => {
-                                  setActiveTab('all-issues');
-                                  setIssueSearchFilter(row.title);
-                                }}
                                 style={{ fontWeight: 600, color: '#f1f5f9', cursor: 'pointer' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedIssueModal(row);
+                                }}
                               >
                                 {row.title}
                               </span>
@@ -1543,25 +1721,41 @@ export default function App() {
                               )}
                             </div>
                           </td>
-                          <td style={{ fontWeight: 600, color: '#38bdf8' }}>{row.crawled}</td>
-                          <td style={{ color: '#ef4444', fontWeight: 600 }}>{row.change} ▲</td>
-                          <td>{row.added || '—'}</td>
-                          <td>{row.newCount || '—'}</td>
-                          <td style={{ color: row.removed ? '#10b981' : undefined }}>{row.removed || '—'}</td>
+                          <td style={{ fontWeight: 700, color: '#38bdf8' }}>{row.crawled.toLocaleString()}</td>
                           <td>
-                            {/* Sparkline miniature vertical bars */}
-                            <div style={{ display: 'inline-flex', alignItems: 'flex-end', height: '14px', gap: '2px' }}>
-                              <span className="sparkline-bar" style={{ height: '6px' }} />
-                              <span className="sparkline-bar" style={{ height: '10px' }} />
-                              <span className="sparkline-bar" style={{ height: '14px' }} />
-                              <span className="sparkline-bar" style={{ height: '8px' }} />
-                              <span className="sparkline-bar" style={{ height: '12px' }} />
+                            {row.changeNum > 0 ? (
+                              <span style={{ color: '#ef4444', fontWeight: 700 }}>+{row.changeNum} ▲</span>
+                            ) : row.changeNum < 0 ? (
+                              <span style={{ color: '#10b981', fontWeight: 700 }}>{Math.abs(row.changeNum)} ▼</span>
+                            ) : (
+                              <span style={{ color: '#64748b' }}>—</span>
+                            )}
+                          </td>
+                          <td style={{ fontWeight: 600 }}>{row.added > 0 ? row.added : '—'}</td>
+                          <td style={{ fontWeight: 600 }}>{row.newCount || '—'}</td>
+                          <td style={{ color: row.removed !== '—' ? '#10b981' : undefined, fontWeight: 600 }}>
+                            {row.removed || '—'}
+                          </td>
+                          <td>
+                            {/* Dynamic Sparkline proportional to site percentage */}
+                            <div style={{ display: 'inline-flex', alignItems: 'flex-end', height: '14px', gap: '2px' }} title={`${row.percentOfSite}% of crawled pages affected`}>
+                              <span className="sparkline-bar" style={{ height: `${Math.max(3, Math.min(14, Math.round(row.percentOfSite * 0.14)))}px`, background: row.severity === 'Critical' ? '#ef4444' : row.severity === 'Warning' ? '#38bdf8' : '#64748b' }} />
+                              <span className="sparkline-bar" style={{ height: `${Math.max(3, Math.min(14, Math.round(row.percentOfSite * 0.12)))}px`, background: row.severity === 'Critical' ? '#ef4444' : row.severity === 'Warning' ? '#38bdf8' : '#64748b' }} />
+                              <span className="sparkline-bar" style={{ height: `${Math.max(4, Math.min(14, Math.round(row.percentOfSite * 0.14)))}px`, background: row.severity === 'Critical' ? '#ef4444' : row.severity === 'Warning' ? '#38bdf8' : '#64748b' }} />
+                              <span className="sparkline-bar" style={{ height: `${Math.max(2, Math.min(14, Math.round(row.percentOfSite * 0.08)))}px`, background: row.severity === 'Critical' ? '#ef4444' : row.severity === 'Warning' ? '#38bdf8' : '#64748b' }} />
+                              <span className="sparkline-bar" style={{ height: `${Math.max(3, Math.min(14, Math.round(row.percentOfSite * 0.11)))}px`, background: row.severity === 'Critical' ? '#ef4444' : row.severity === 'Warning' ? '#38bdf8' : '#64748b' }} />
                             </div>
                           </td>
                           <td style={{ textAlign: 'right' }}>
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                              <HelpCircle size={14} color="#64748b" style={{ cursor: 'pointer' }} />
-                              <MoreVertical size={14} color="#64748b" style={{ cursor: 'pointer' }} />
+                            <div
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedIssueModal(row);
+                              }}
+                            >
+                              <HelpCircle size={14} color="#64748b" style={{ cursor: 'pointer' }} title="View issue details and affected pages" />
+                              <MoreVertical size={14} color="#64748b" style={{ cursor: 'pointer' }} title="Options" />
                             </div>
                           </td>
                         </tr>
@@ -1994,6 +2188,239 @@ export default function App() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. Issue Details Modal (Triggered by clicking any issue) */}
+      {selectedIssueModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110, padding: '20px' }}>
+          <div className="ahrefs-card animate-fade-in" style={{ width: '100%', maxWidth: '960px', maxHeight: '90vh', overflow: 'hidden', padding: 0, display: 'flex', flexDirection: 'column' }}>
+            
+            {/* Header */}
+            <div style={{ padding: '18px 24px', borderBottom: '1px solid #232730', background: '#121721', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                  <span
+                    className={`badge ${selectedIssueModal.severity === 'Critical' ? 'badge-critical' : selectedIssueModal.severity === 'Warning' ? 'badge-warning' : 'badge-passed'}`}
+                    style={{ fontSize: '0.72rem', padding: '3px 8px', fontWeight: 700 }}
+                  >
+                    {selectedIssueModal.severity === 'Critical' ? '🔴 Critical Error' : selectedIssueModal.severity === 'Warning' ? '🟡 Warning' : '🔵 Notice'}
+                  </span>
+                  <span style={{ fontSize: '0.75rem', color: '#94a3b8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    {selectedIssueModal.category || 'SEO Audit'}
+                  </span>
+                  <span className="badge badge-info" style={{ fontSize: '0.72rem', padding: '3px 8px' }}>
+                    {selectedIssueModal.affectedUrls?.length || 0} Affected Pages
+                  </span>
+                  {selectedIssueModal.isNew && (
+                    <span style={{ background: '#0284c7', color: '#fff', fontSize: '0.68rem', fontWeight: 800, padding: '2px 6px', borderRadius: '4px' }}>
+                      NEW ISSUE
+                    </span>
+                  )}
+                </div>
+                <h2 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff', margin: 0 }}>
+                  {selectedIssueModal.title}
+                </h2>
+              </div>
+
+              <button
+                onClick={() => { setSelectedIssueModal(null); setIssueUrlSearch(''); }}
+                className="btn-secondary"
+                style={{ padding: '6px' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '20px 24px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              
+              {/* Problem & Fix Intelligence Cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+                <div style={{ background: '#12151a', padding: '16px', borderRadius: '8px', border: '1px solid #232b3a' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#f87171', fontWeight: 700, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    <AlertCircle size={16} /> What is the issue?
+                  </div>
+                  <p style={{ fontSize: '0.84rem', color: '#cbd5e1', lineHeight: 1.5, margin: 0 }}>
+                    {selectedIssueModal.description || 'This issue impacts on-page optimization, site architecture, or search crawlability.'}
+                  </p>
+                </div>
+
+                <div style={{ background: '#12151a', padding: '16px', borderRadius: '8px', border: '1px solid #232b3a' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#10b981', fontWeight: 700, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    <CheckCircle2 size={16} /> How to fix it
+                  </div>
+                  <p style={{ fontSize: '0.84rem', color: '#cbd5e1', lineHeight: 1.5, margin: 0 }}>
+                    {selectedIssueModal.recommendation || 'Follow modern technical SEO guidelines to update templates, markup, or server response headers.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Affected URLs Table */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
+                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#fff', margin: 0 }}>
+                    Affected URLs ({selectedIssueModal.affectedUrls?.length || 0})
+                  </h3>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ position: 'relative' }}>
+                      <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#64748b' }} />
+                      <input
+                        type="text"
+                        placeholder="Filter affected URLs..."
+                        value={issueUrlSearch}
+                        onChange={(e) => setIssueUrlSearch(e.target.value)}
+                        style={{
+                          background: '#12151a',
+                          border: '1px solid #28303e',
+                          color: '#fff',
+                          padding: '5px 10px 5px 30px',
+                          borderRadius: '6px',
+                          fontSize: '0.78rem',
+                          width: '220px'
+                        }}
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => exportSingleIssueCSV(selectedIssueModal)}
+                      className="btn-secondary"
+                      style={{ padding: '5px 12px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px' }}
+                    >
+                      <Download size={13} /> Export CSV
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ border: '1px solid #232730', borderRadius: '8px', overflow: 'hidden', background: '#12151a' }}>
+                  <div style={{ maxHeight: '340px', overflowY: 'auto' }}>
+                    <table className="ahrefs-table" style={{ margin: 0 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ minWidth: '340px' }}>URL & Page Title</th>
+                          <th>Status</th>
+                          <th>Context / Issue Details</th>
+                          <th style={{ textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(selectedIssueModal.affectedUrls || [])
+                          .filter(u => !issueUrlSearch || u.toLowerCase().includes(issueUrlSearch.toLowerCase()))
+                          .map((urlStr, uIdx) => {
+                            const pageObj = siteData?.pages?.find(p => p.url === urlStr);
+                            const key = `${selectedIssueModal.title}::${urlStr}`;
+                            const verifyState = issueVerificationStatus[key];
+
+                            return (
+                              <tr key={uIdx} style={{ background: uIdx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
+                                <td>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                    <a
+                                      href={urlStr}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      style={{
+                                        color: '#38bdf8',
+                                        textDecoration: 'none',
+                                        fontWeight: 600,
+                                        fontSize: '0.82rem',
+                                        wordBreak: 'break-all',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px'
+                                      }}
+                                    >
+                                      {urlStr} <ExternalLink size={11} color="#64748b" />
+                                    </a>
+                                    {pageObj?.meta?.title && (
+                                      <span style={{ fontSize: '0.72rem', color: '#94a3b8' }}>
+                                        {pageObj.meta.title}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td>
+                                  <span style={{
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    background: (pageObj?.statusCode || 200) < 400 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                                    color: (pageObj?.statusCode || 200) < 400 ? '#10b981' : '#f87171'
+                                  }}>
+                                    {pageObj?.statusCode || 200}
+                                  </span>
+                                </td>
+                                <td>
+                                  <span style={{ fontSize: '0.76rem', color: '#cbd5e1' }}>
+                                    {renderIssueContextForUrl(selectedIssueModal.title, pageObj)}
+                                  </span>
+                                </td>
+                                <td style={{ textAlign: 'right' }}>
+                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                    {pageObj && (
+                                      <button
+                                        onClick={() => setSelectedPageModal(pageObj)}
+                                        className="btn-secondary"
+                                        style={{ padding: '4px 8px', fontSize: '0.72rem' }}
+                                        title="Inspect full technical diagnostics"
+                                      >
+                                        Inspect
+                                      </button>
+                                    )}
+
+                                    {verifyState?.status === 'completed' ? (
+                                      <span className="badge badge-passed" style={{ fontSize: '0.7rem' }}>
+                                        <CheckCircle2 size={11} /> Resolved
+                                      </span>
+                                    ) : (
+                                      <button
+                                        onClick={(e) => verifyAndResolveIssue(selectedIssueModal.title, urlStr, e)}
+                                        className="btn-secondary"
+                                        style={{ padding: '4px 8px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                        disabled={verifyState?.status === 'verifying'}
+                                        title="Re-crawl and verify if this URL is fixed"
+                                      >
+                                        {verifyState?.status === 'verifying' ? (
+                                          <>
+                                            <RefreshCw size={11} className="animate-spin" /> Verifying...
+                                          </>
+                                        ) : (
+                                          <>
+                                            <CheckCircle2 size={11} color="#10b981" /> Verify Fix
+                                          </>
+                                        )}
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: '14px 24px', borderTop: '1px solid #232730', background: '#121721', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                Real-time Issue Diagnostics · Click any URL to inspect on-page audits
+              </span>
+              <button
+                onClick={() => { setSelectedIssueModal(null); setIssueUrlSearch(''); }}
+                className="btn-primary"
+                style={{ padding: '6px 18px', fontSize: '0.8rem' }}
+              >
+                Close
+              </button>
+            </div>
+
           </div>
         </div>
       )}
