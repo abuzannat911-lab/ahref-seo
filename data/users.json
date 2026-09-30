@@ -1,0 +1,10 @@
+[
+  {
+    "id": "usr_1790802997910_1vk7",
+    "email": "admin@ahref.local",
+    "name": "Admin Auditor",
+    "passwordHash": "$2b$10$r4vYgP83qFsGc7w7g11PZeJkOiYZdU1Idpm1VHcctRJTYb.t77Ph.",
+    "role": "Pro Auditor",
+    "createdAt": "2026-09-30T21:16:37.910Z"
+  }
+]

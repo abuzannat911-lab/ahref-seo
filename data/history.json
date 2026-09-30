@@ -1,0 +1,314 @@
+[
+  {
+    "id": "hist_1790803711341_65qmg",
+    "userId": "guest",
+    "domain": "example.com",
+    "rootUrl": "https://example.com/",
+    "score": 58,
+    "grade": "D",
+    "totalPages": 1,
+    "totalDiscovered": 1,
+    "missingAltCount": 0,
+    "criticalIssues": 2,
+    "durationMs": 364,
+    "timestamp": "2026-09-30T21:28:31.341Z",
+    "isAutoCrawl": false,
+    "reportSummary": {
+      "domain": "example.com",
+      "rootUrl": "https://example.com/",
+      "siteHealthScore": 58,
+      "siteGrade": "D",
+      "stats": {
+        "totalPagesCrawled": 1,
+        "totalDiscoveredUrls": 1,
+        "sitemapUrlsFound": 0,
+        "totalMissingAltImages": 0,
+        "healthyPages": 0,
+        "warningPages": 1,
+        "errorPages": 0,
+        "statusCounts": {
+          "200 OK": 1,
+          "3xx Redirects": 0,
+          "4xx Client Errors": 0,
+          "5xx Server Errors": 0
+        }
+      },
+      "domainMetrics": {
+        "domainRating": 78,
+        "backlinks": 23166,
+        "referringDomains": 1936,
+        "organicTraffic": 96793,
+        "source": "Ahrefs Intelligence Heuristic / Connected API"
+      },
+      "aggregateIssuesCount": 5
+    },
+    "fullReport": {
+      "rootUrl": "https://example.com/",
+      "domain": "example.com",
+      "sitemapSourceUrl": "https://example.com/sitemap.xml",
+      "crawlTimestamp": "2026-09-30T21:28:31.341Z",
+      "crawlDurationMs": 364,
+      "siteHealthScore": 58,
+      "siteGrade": "D",
+      "stats": {
+        "totalPagesCrawled": 1,
+        "totalDiscoveredUrls": 1,
+        "sitemapUrlsFound": 0,
+        "totalMissingAltImages": 0,
+        "healthyPages": 0,
+        "warningPages": 1,
+        "errorPages": 0,
+        "statusCounts": {
+          "200 OK": 1,
+          "3xx Redirects": 0,
+          "4xx Client Errors": 0,
+          "5xx Server Errors": 0
+        }
+      },
+      "domainMetrics": {
+        "domainRating": 78,
+        "backlinks": 23166,
+        "referringDomains": 1936,
+        "organicTraffic": 96793,
+        "source": "Ahrefs Intelligence Heuristic / Connected API"
+      },
+      "allMissingAltImages": [],
+      "aggregateIssues": [
+        {
+          "title": "Missing Meta Description",
+          "category": "Meta & On-Page",
+          "severity": "Critical",
+          "description": "Page has no meta description.",
+          "recommendation": "Provide a 120-160 character meta description with CTA.",
+          "affectedUrls": [
+            "https://example.com/"
+          ]
+        },
+        {
+          "title": "Missing H1 Heading",
+          "category": "Content & Hierarchy",
+          "severity": "Critical",
+          "description": "Page contains no <h1> tag.",
+          "recommendation": "Add exactly one <h1> tag representing the primary topic.",
+          "affectedUrls": [
+            "https://example.com/"
+          ]
+        },
+        {
+          "title": "Title Tag Too Short",
+          "category": "Meta & On-Page",
+          "severity": "Warning",
+          "description": "Title is only 14 characters long.",
+          "recommendation": "Expand title with relevant keywords.",
+          "affectedUrls": [
+            "https://example.com/"
+          ]
+        },
+        {
+          "title": "Missing Canonical Tag",
+          "category": "Technical SEO",
+          "severity": "Warning",
+          "description": "No canonical URL link tag found.",
+          "recommendation": "Add canonical tag pointing to primary URL.",
+          "affectedUrls": [
+            "https://example.com/"
+          ]
+        },
+        {
+          "title": "Thin Content Detected",
+          "category": "Content & Quality",
+          "severity": "Warning",
+          "description": "Page only has 26 words of text.",
+          "recommendation": "Expand content depth.",
+          "affectedUrls": [
+            "https://example.com/"
+          ]
+        }
+      ],
+      "allDiscoveredUrls": [
+        {
+          "url": "https://example.com/",
+          "isCrawled": true,
+          "fromSitemap": false
+        }
+      ],
+      "pages": [
+        {
+          "url": "https://example.com/",
+          "domain": "example.com",
+          "depth": 0,
+          "referringPage": null,
+          "statusCode": 200,
+          "isBroken": false,
+          "responseTimeMs": 16,
+          "ttfbMs": 6,
+          "isHttps": true,
+          "score": 58,
+          "grade": "D",
+          "meta": {
+            "title": "Example Domain",
+            "titleLength": 14,
+            "metaDescription": "",
+            "metaDescriptionLength": 0,
+            "metaRobots": "index, follow",
+            "canonicalUrl": "",
+            "language": "en",
+            "charset": "utf-8",
+            "viewport": "width=device-width,initial-scale=1"
+          },
+          "social": {
+            "ogTitle": "Example Domain",
+            "ogDesc": "",
+            "ogImage": ""
+          },
+          "headings": {
+            "h1": [],
+            "h2": [],
+            "h3": [],
+            "h4": [],
+            "h5": [],
+            "h6": []
+          },
+          "content": {
+            "wordCount": 26,
+            "htmlSizeKb": "0.7",
+            "readability": {
+              "score": 57,
+              "level": "Fairly Difficult",
+              "wordsCount": 27,
+              "sentencesCount": 3
+            },
+            "keywords": [
+              {
+                "word": "domain",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "use",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "documentation",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "examples",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "without",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "needing",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "permission",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "service",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "avoid",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "relying",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "testing",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "monitoring",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "purposes",
+                "count": 1,
+                "density": "7.1%"
+              },
+              {
+                "word": "learn",
+                "count": 1,
+                "density": "7.1%"
+              }
+            ]
+          },
+          "images": {
+            "total": 0,
+            "missingAlt": 0,
+            "missingAltList": [],
+            "list": []
+          },
+          "links": {
+            "internalCount": 0,
+            "externalCount": 1,
+            "nofollowCount": 0,
+            "discoveredInternal": [],
+            "discoveredExternal": [
+              "https://iana.org/help/example-domains"
+            ]
+          },
+          "structuredData": {
+            "count": 0,
+            "schemas": []
+          },
+          "issues": [
+            {
+              "category": "Meta & On-Page",
+              "severity": "Warning",
+              "title": "Title Tag Too Short",
+              "description": "Title is only 14 characters long.",
+              "recommendation": "Expand title with relevant keywords."
+            },
+            {
+              "category": "Meta & On-Page",
+              "severity": "Critical",
+              "title": "Missing Meta Description",
+              "description": "Page has no meta description.",
+              "recommendation": "Provide a 120-160 character meta description with CTA."
+            },
+            {
+              "category": "Content & Hierarchy",
+              "severity": "Critical",
+              "title": "Missing H1 Heading",
+              "description": "Page contains no <h1> tag.",
+              "recommendation": "Add exactly one <h1> tag representing the primary topic."
+            },
+            {
+              "category": "Technical SEO",
+              "severity": "Warning",
+              "title": "Missing Canonical Tag",
+              "description": "No canonical URL link tag found.",
+              "recommendation": "Add canonical tag pointing to primary URL."
+            },
+            {
+              "category": "Content & Quality",
+              "severity": "Warning",
+              "title": "Thin Content Detected",
+              "description": "Page only has 26 words of text.",
+              "recommendation": "Expand content depth."
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

@@ -4,6 +4,40 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'ahref_seo_pro_secret_key_2026_x99';
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const SCHEDULES_FILE = path.join(DATA_DIR, 'schedules.json');
+
+if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, '[]', 'utf8');
+if (!fs.existsSync(HISTORY_FILE)) fs.writeFileSync(HISTORY_FILE, '[]', 'utf8');
+if (!fs.existsSync(SCHEDULES_FILE)) fs.writeFileSync(SCHEDULES_FILE, '[]', 'utf8');
+
+function readJsonFile(filePath, defaultVal = []) {
+  try {
+    if (!fs.existsSync(filePath)) return defaultVal;
+    const content = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(content || '[]');
+  } catch (e) {
+    return defaultVal;
+  }
+}
+
+function writeJsonFile(filePath, data) {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error(`Failed to write JSON file ${filePath}:`, e.message);
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -14,6 +48,20 @@ const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 35, rejectUnau
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+// Auth Token Helper Middleware
+function authenticateOptionalUser(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.user = decoded;
+    } catch (e) {}
+  }
+  next();
+}
+app.use(authenticateOptionalUser);
 
 function normalizeUrl(inputUrl) {
   let target = inputUrl.trim();
@@ -852,25 +900,18 @@ app.get('/api/crawl-stream', async (req, res) => {
     pages: crawledPages
   };
 
+  // Automatically save history snapshot
+  saveAuditToHistory(fullAuditReport, req.user?.id || 'guest', false);
+
   // Emit final complete report
   sendEvent('complete', fullAuditReport);
   res.end();
 });
 
-// Regular non-streaming crawl endpoint
-app.post('/api/crawl-site', async (req, res) => {
-  const { url, sitemapUrl, maxPages = 250, maxDepth = 4 } = req.body;
-  const inputTarget = sitemapUrl || url;
-  if (!inputTarget) return res.status(400).json({ error: 'URL or Sitemap URL is required' });
-
+// Reusable Site Crawl Engine Function
+async function runSiteCrawlEngine({ inputTarget, maxPages = 250, maxDepth = 4, onLog, onProgress }) {
   const targetNormalized = normalizeUrl(inputTarget);
-  let parsedRoot;
-  try {
-    parsedRoot = new URL(targetNormalized);
-  } catch (e) {
-    return res.status(400).json({ error: 'Invalid URL format' });
-  }
-
+  const parsedRoot = new URL(targetNormalized);
   const rootDomain = parsedRoot.hostname;
   const crawlLimit = Math.min(10000, Math.max(2, parseInt(maxPages) || 250));
   const depthLimit = Math.min(8, Math.max(1, parseInt(maxDepth) || 4));
@@ -880,13 +921,20 @@ app.post('/api/crawl-site', async (req, res) => {
   let sitemapEntries = [];
   let rootUrl = isDirectSitemap ? `${parsedRoot.protocol}//${parsedRoot.hostname}/` : targetNormalized;
 
+  if (onLog) onLog('info', `🚀 Initializing crawler for domain: ${rootDomain}`);
+
   if (isDirectSitemap) {
     const parsed = await parseCustomSitemap(targetNormalized);
     sitemapEntries = parsed.discovered;
+    if (onLog) onLog('success', `📋 Parsed direct sitemap ${targetNormalized}: Found ${sitemapEntries.length.toLocaleString()} URLs`);
   } else {
     const defaultSitemap = `${parsedRoot.protocol}//${parsedRoot.hostname}/sitemap.xml`;
     const parsed = await parseCustomSitemap(defaultSitemap);
     sitemapEntries = parsed.discovered;
+    if (onLog) {
+      if (sitemapEntries.length > 0) onLog('success', `📋 Discovered sitemap.xml: Found ${sitemapEntries.length.toLocaleString()} URLs`);
+      else onLog('warning', `⚠️ No default sitemap found at /sitemap.xml. Starting HTML link discovery.`);
+    }
   }
 
   const sitemapUrlStrings = sitemapEntries.map(e => e.url);
@@ -901,47 +949,75 @@ app.post('/api/crawl-site', async (req, res) => {
     }
   });
 
-  const CONCURRENCY = 20;
+  const CONCURRENCY = 15;
+  if (onLog) onLog('info', `⚡ Spawning worker pool (${CONCURRENCY} parallel spider threads)...`);
 
-  async function processQueue() {
-    while (queue.length > 0 && visitedUrls.size < crawlLimit) {
-      const batch = [];
-      while (batch.length < CONCURRENCY && queue.length > 0 && (visitedUrls.size + batch.length) < crawlLimit) {
-        const item = queue.shift();
-        if (!visitedUrls.has(item.url)) {
-          visitedUrls.add(item.url);
-          batch.push(item);
-        }
+  if (onProgress) {
+    onProgress({
+      percent: 1,
+      currentCrawled: 0,
+      targetLimit: crawlLimit,
+      totalDiscovered: discoveredAllUrls.size,
+      currentUrl: rootUrl,
+      activeWorkers: CONCURRENCY
+    });
+  }
+
+  while (queue.length > 0 && visitedUrls.size < crawlLimit) {
+    const batch = [];
+    while (batch.length < CONCURRENCY && queue.length > 0 && (visitedUrls.size + batch.length) < crawlLimit) {
+      const item = queue.shift();
+      if (!visitedUrls.has(item.url)) {
+        visitedUrls.add(item.url);
+        batch.push(item);
       }
+    }
 
-      if (batch.length === 0) break;
+    if (batch.length === 0) break;
 
-      const batchResults = await Promise.all(
-        batch.map(item => auditSinglePage(item.url, item.referringPage, item.depth))
-      );
+    const batchResults = await Promise.all(
+      batch.map(async (item) => {
+        const res = await auditSinglePage(item.url, item.referringPage, item.depth);
+        if (onLog) {
+          const statusLevel = res.statusCode === 200 ? 'success' : res.statusCode >= 300 && res.statusCode < 400 ? 'info' : 'error';
+          const missingAltInfo = res.images?.missingAlt > 0 ? ` | ⚠️ ${res.images.missingAlt} Missing ALTs` : '';
+          onLog(statusLevel, `[HTTP ${res.statusCode || 'ERR'}] ${res.url.replace(/^https?:\/\/[^/]+/, '') || '/'} (${res.responseTimeMs}ms | Score: ${res.score}%${missingAltInfo})`);
+        }
+        return res;
+      })
+    );
 
-      for (const pageAudit of batchResults) {
-        crawledPages.push(pageAudit);
+    for (const pageAudit of batchResults) {
+      crawledPages.push(pageAudit);
 
-        if (pageAudit.depth < depthLimit && pageAudit.links && pageAudit.links.discoveredInternal) {
-          for (const discovered of pageAudit.links.discoveredInternal) {
-            discoveredAllUrls.add(discovered);
-            if (!visitedUrls.has(discovered) && queue.length < crawlLimit * 4) {
-              queue.push({
-                url: discovered,
-                referringPage: pageAudit.url,
-                depth: pageAudit.depth + 1
-              });
-            }
+      if (pageAudit.depth < depthLimit && pageAudit.links && pageAudit.links.discoveredInternal) {
+        for (const discovered of pageAudit.links.discoveredInternal) {
+          discoveredAllUrls.add(discovered);
+          if (!visitedUrls.has(discovered) && queue.length < crawlLimit * 4) {
+            queue.push({
+              url: discovered,
+              referringPage: pageAudit.url,
+              depth: pageAudit.depth + 1
+            });
           }
         }
       }
     }
+
+    if (onProgress) {
+      const percent = Math.min(100, Math.round((crawledPages.length / crawlLimit) * 100));
+      onProgress({
+        percent,
+        currentCrawled: crawledPages.length,
+        targetLimit: crawlLimit,
+        totalDiscovered: discoveredAllUrls.size,
+        currentUrl: batch[batch.length - 1]?.url || rootUrl,
+        activeWorkers: Math.min(CONCURRENCY, queue.length)
+      });
+    }
   }
 
-  await processQueue();
   const totalDuration = Date.now() - startTime;
-
   const totalPagesCrawled = crawledPages.length;
   const totalHealthyPages = crawledPages.filter(p => p.score >= 80 && !p.isBroken).length;
   const totalWarningPages = crawledPages.filter(p => p.score >= 50 && p.score < 80 && !p.isBroken).length;
@@ -1010,7 +1086,7 @@ app.post('/api/crawl-site', async (req, res) => {
     source: 'Ahrefs Intelligence Heuristic / Connected API'
   };
 
-  const fullAuditReport = {
+  return {
     rootUrl,
     domain: rootDomain,
     sitemapSourceUrl: isDirectSitemap ? targetNormalized : `${parsedRoot.protocol}//${parsedRoot.hostname}/sitemap.xml`,
@@ -1034,9 +1110,358 @@ app.post('/api/crawl-site', async (req, res) => {
     allDiscoveredUrls: allDiscoveredList,
     pages: crawledPages
   };
+}
 
-  res.json(fullAuditReport);
+// Regular non-streaming crawl endpoint
+app.post('/api/crawl-site', async (req, res) => {
+  const { url, sitemapUrl, maxPages = 250, maxDepth = 4 } = req.body;
+  const inputTarget = sitemapUrl || url;
+  if (!inputTarget) return res.status(400).json({ error: 'URL or Sitemap URL is required' });
+
+  try {
+    const fullAuditReport = await runSiteCrawlEngine({
+      inputTarget,
+      maxPages,
+      maxDepth
+    });
+
+    // Automatically save history item
+    saveAuditToHistory(fullAuditReport, req.user?.id || 'guest', false);
+
+    res.json(fullAuditReport);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
+// Helper to save audit snapshot to history.json
+function saveAuditToHistory(report, userId = 'guest', isAutoCrawl = false) {
+  try {
+    const history = readJsonFile(HISTORY_FILE, []);
+    const historyItem = {
+      id: 'hist_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      userId,
+      domain: report.domain,
+      rootUrl: report.rootUrl,
+      score: report.siteHealthScore,
+      grade: report.siteGrade,
+      totalPages: report.stats.totalPagesCrawled,
+      totalDiscovered: report.stats.totalDiscoveredUrls,
+      missingAltCount: report.stats.totalMissingAltImages,
+      criticalIssues: (report.aggregateIssues || []).filter(i => i.severity === 'Critical').length,
+      durationMs: report.crawlDurationMs,
+      timestamp: report.crawlTimestamp || new Date().toISOString(),
+      isAutoCrawl,
+      // Save report summary and compact payload
+      reportSummary: {
+        domain: report.domain,
+        rootUrl: report.rootUrl,
+        siteHealthScore: report.siteHealthScore,
+        siteGrade: report.siteGrade,
+        stats: report.stats,
+        domainMetrics: report.domainMetrics,
+        aggregateIssuesCount: report.aggregateIssues?.length || 0
+      },
+      fullReport: report
+    };
+
+    history.unshift(historyItem);
+    // Keep max 200 history records
+    writeJsonFile(HISTORY_FILE, history.slice(0, 200));
+    return historyItem;
+  } catch (e) {
+    console.error('Error saving history item:', e.message);
+    return null;
+  }
+}
+
+// ----------------------------------------------------
+// AUTHENTICATION ENDPOINTS
+// ----------------------------------------------------
+app.post('/api/auth/register', async (req, res) => {
+  const { email, password, name } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+  const users = readJsonFile(USERS_FILE, []);
+  const normalizedEmail = email.trim().toLowerCase();
+
+  if (users.some(u => u.email === normalizedEmail)) {
+    return res.status(400).json({ error: 'An account with this email already exists' });
+  }
+
+  const salt = await bcrypt.genSalt(10);
+  const passwordHash = await bcrypt.hash(password, salt);
+
+  const newUser = {
+    id: 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    email: normalizedEmail,
+    name: name || normalizedEmail.split('@')[0],
+    passwordHash,
+    role: 'Pro Auditor',
+    createdAt: new Date().toISOString()
+  };
+
+  users.push(newUser);
+  writeJsonFile(USERS_FILE, users);
+
+  const token = jwt.sign({ id: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role }, JWT_SECRET, { expiresIn: '30d' });
+
+  const userSafe = { id: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role, createdAt: newUser.createdAt };
+  res.json({ token, user: userSafe, message: 'Account registered successfully!' });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+  const users = readJsonFile(USERS_FILE, []);
+  const normalizedEmail = email.trim().toLowerCase();
+  const user = users.find(u => u.email === normalizedEmail);
+
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
+  const isMatch = await bcrypt.compare(password, user.passwordHash);
+  if (!isMatch) {
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
+  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role || 'Pro Auditor' }, JWT_SECRET, { expiresIn: '30d' });
+  const userSafe = { id: user.id, email: user.email, name: user.name, role: user.role || 'Pro Auditor', createdAt: user.createdAt };
+
+  res.json({ token, user: userSafe, message: 'Signed in successfully!' });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+  const users = readJsonFile(USERS_FILE, []);
+  const user = users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  res.json({ user: { id: user.id, email: user.email, name: user.name, role: user.role, createdAt: user.createdAt } });
+});
+
+// ----------------------------------------------------
+// AUTOMATIC AUDIT HISTORY ENDPOINTS
+// ----------------------------------------------------
+app.get('/api/history', (req, res) => {
+  const history = readJsonFile(HISTORY_FILE, []);
+  // Return list without bulky fullReport for fast table loading
+  const summaryList = history.map(item => ({
+    id: item.id,
+    userId: item.userId,
+    domain: item.domain,
+    rootUrl: item.rootUrl,
+    score: item.score,
+    grade: item.grade,
+    totalPages: item.totalPages,
+    totalDiscovered: item.totalDiscovered,
+    missingAltCount: item.missingAltCount,
+    criticalIssues: item.criticalIssues,
+    durationMs: item.durationMs,
+    timestamp: item.timestamp,
+    isAutoCrawl: item.isAutoCrawl || false
+  }));
+  res.json(summaryList);
+});
+
+app.get('/api/history/:id', (req, res) => {
+  const history = readJsonFile(HISTORY_FILE, []);
+  const item = history.find(h => h.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'Audit snapshot not found' });
+  res.json(item.fullReport || item);
+});
+
+app.post('/api/history', (req, res) => {
+  const reportData = req.body;
+  if (!reportData || !reportData.domain) {
+    return res.status(400).json({ error: 'Valid audit report data required' });
+  }
+  const saved = saveAuditToHistory(reportData, req.user?.id || 'guest', false);
+  res.json({ success: true, item: saved });
+});
+
+app.delete('/api/history/:id', (req, res) => {
+  let history = readJsonFile(HISTORY_FILE, []);
+  history = history.filter(h => h.id !== req.params.id);
+  writeJsonFile(HISTORY_FILE, history);
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// AUTO-CRAWL & SCHEDULES SYSTEM
+// ----------------------------------------------------
+app.get('/api/schedules', (req, res) => {
+  const schedules = readJsonFile(SCHEDULES_FILE, []);
+  res.json(schedules);
+});
+
+app.post('/api/schedules', (req, res) => {
+  const targetUrl = req.body.targetUrl || req.body.url;
+  const { name, frequency = '24h', maxPages = 250, maxDepth = 4 } = req.body;
+  if (!targetUrl) return res.status(400).json({ error: 'Target URL is required' });
+
+  const schedules = readJsonFile(SCHEDULES_FILE, []);
+
+  const intervalMinutesMap = {
+    '30m': 30,
+    '1h': 60,
+    '6h': 360,
+    '12h': 720,
+    '24h': 1440,
+    'weekly': 10080
+  };
+
+  const intervalMins = intervalMinutesMap[frequency] || 1440;
+  const now = Date.now();
+  const nextRun = new Date(now + intervalMins * 60 * 1000).toISOString();
+
+  const newSchedule = {
+    id: 'sch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    userId: req.user?.id || 'guest',
+    name: name || `Auto Audit: ${new URL(normalizeUrl(targetUrl)).hostname}`,
+    targetUrl: normalizeUrl(targetUrl),
+    frequency,
+    intervalMinutes: intervalMins,
+    maxPages: parseInt(maxPages) || 250,
+    maxDepth: parseInt(maxDepth) || 4,
+    active: true,
+    createdAt: new Date().toISOString(),
+    lastRun: null,
+    nextRun,
+    lastScore: null,
+    lastStatus: 'Scheduled'
+  };
+
+  schedules.unshift(newSchedule);
+  writeJsonFile(SCHEDULES_FILE, schedules);
+
+  res.json({ success: true, schedule: newSchedule });
+});
+
+app.put('/api/schedules/:id/toggle', (req, res) => {
+  const schedules = readJsonFile(SCHEDULES_FILE, []);
+  const schedule = schedules.find(s => s.id === req.params.id);
+  if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+
+  schedule.active = !schedule.active;
+  if (schedule.active) {
+    schedule.nextRun = new Date(Date.now() + (schedule.intervalMinutes || 1440) * 60 * 1000).toISOString();
+    schedule.lastStatus = 'Active / Waiting Next Run';
+  } else {
+    schedule.lastStatus = 'Paused';
+  }
+
+  writeJsonFile(SCHEDULES_FILE, schedules);
+  res.json({ success: true, schedule });
+});
+
+app.delete('/api/schedules/:id', (req, res) => {
+  let schedules = readJsonFile(SCHEDULES_FILE, []);
+  schedules = schedules.filter(s => s.id !== req.params.id);
+  writeJsonFile(SCHEDULES_FILE, schedules);
+  res.json({ success: true });
+});
+
+app.post('/api/schedules/:id/run-now', async (req, res) => {
+  const schedules = readJsonFile(SCHEDULES_FILE, []);
+  const schedule = schedules.find(s => s.id === req.params.id);
+  if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+
+  schedule.lastStatus = 'Running Background Audit...';
+  writeJsonFile(SCHEDULES_FILE, schedules);
+
+  // Trigger non-blocking asynchronous background crawl
+  (async () => {
+    try {
+      console.log(`[Auto-Crawl Runner] Manually triggering audit for schedule ${schedule.name} (${schedule.targetUrl})...`);
+      const report = await runSiteCrawlEngine({
+        inputTarget: schedule.targetUrl,
+        maxPages: schedule.maxPages,
+        maxDepth: schedule.maxDepth
+      });
+
+      // Save to history automatically
+      saveAuditToHistory(report, schedule.userId || 'guest', true);
+
+      // Update schedule record
+      const currentSchedules = readJsonFile(SCHEDULES_FILE, []);
+      const currentSch = currentSchedules.find(s => s.id === schedule.id);
+      if (currentSch) {
+        currentSch.lastRun = new Date().toISOString();
+        currentSch.nextRun = new Date(Date.now() + (currentSch.intervalMinutes || 1440) * 60 * 1000).toISOString();
+        currentSch.lastScore = report.siteHealthScore;
+        currentSch.lastStatus = `Completed (Score: ${report.siteHealthScore}% | ${report.stats.totalPagesCrawled} pages)`;
+        writeJsonFile(SCHEDULES_FILE, currentSchedules);
+      }
+      console.log(`[Auto-Crawl Runner] Finished audit for schedule ${schedule.name}. Score: ${report.siteHealthScore}%`);
+    } catch (err) {
+      console.error(`[Auto-Crawl Runner] Error for schedule ${schedule.name}:`, err.message);
+      const currentSchedules = readJsonFile(SCHEDULES_FILE, []);
+      const currentSch = currentSchedules.find(s => s.id === schedule.id);
+      if (currentSch) {
+        currentSch.lastStatus = `Error: ${err.message}`;
+        writeJsonFile(SCHEDULES_FILE, currentSchedules);
+      }
+    }
+  })();
+
+  res.json({ success: true, message: 'Background crawl initiated successfully!' });
+});
+
+// ----------------------------------------------------
+// PERSISTENT BACKGROUND AUTO-CRAWLER SCHEDULER ENGINE
+// ----------------------------------------------------
+let isSchedulerRunning = false;
+setInterval(async () => {
+  if (isSchedulerRunning) return;
+  isSchedulerRunning = true;
+
+  try {
+    const schedules = readJsonFile(SCHEDULES_FILE, []);
+    const now = Date.now();
+
+    for (const schedule of schedules) {
+      if (!schedule.active) continue;
+
+      const nextRunTime = new Date(schedule.nextRun).getTime();
+      if (!isNaN(nextRunTime) && now >= nextRunTime) {
+        console.log(`[Auto-Crawl Scheduler] Time reached for schedule: ${schedule.name} (${schedule.targetUrl}). Starting automated crawl...`);
+        schedule.lastStatus = 'Auto-crawling in progress...';
+        writeJsonFile(SCHEDULES_FILE, schedules);
+
+        try {
+          const report = await runSiteCrawlEngine({
+            inputTarget: schedule.targetUrl,
+            maxPages: schedule.maxPages,
+            maxDepth: schedule.maxDepth
+          });
+
+          // Automatically record into history
+          saveAuditToHistory(report, schedule.userId || 'guest', true);
+
+          schedule.lastRun = new Date().toISOString();
+          schedule.nextRun = new Date(now + (schedule.intervalMinutes || 1440) * 60 * 1000).toISOString();
+          schedule.lastScore = report.siteHealthScore;
+          schedule.lastStatus = `Auto-Completed (Score: ${report.siteHealthScore}% | ${report.stats.totalPagesCrawled} pages)`;
+          writeJsonFile(SCHEDULES_FILE, schedules);
+          console.log(`[Auto-Crawl Scheduler] Saved automated audit for ${schedule.targetUrl}. Score: ${report.siteHealthScore}%`);
+        } catch (crawlErr) {
+          schedule.lastStatus = `Auto-crawl Failed: ${crawlErr.message}`;
+          schedule.nextRun = new Date(now + 15 * 60 * 1000).toISOString(); // Retry in 15 mins
+          writeJsonFile(SCHEDULES_FILE, schedules);
+        }
+      }
+    }
+  } catch (loopErr) {
+    console.error('[Auto-Crawl Scheduler Error]:', loopErr.message);
+  } finally {
+    isSchedulerRunning = false;
+  }
+}, 25000); // Check every 25 seconds
 
 // Single Page Audit API
 app.post('/api/audit', async (req, res) => {
@@ -1054,4 +1479,6 @@ app.post('/api/audit', async (req, res) => {
 const PORT_APP = process.env.PORT || 5001;
 app.listen(PORT_APP, () => {
   console.log(`🚀 SEO Audit Pro Backend Server running on http://localhost:${PORT_APP}`);
+  console.log(`🤖 Background Auto-Crawl Scheduler active (persisted in ./data/schedules.json)`);
 });
+

@@ -7,7 +7,9 @@ import {
   Monitor, Award, ListFilter, ArrowUpDown, ChevronRight, X,
   FolderTree, CornerDownRight, CheckCircle, Database, FileSpreadsheet,
   Settings2, Hash, FileCode, Copy, CheckCheck, Terminal,
-  Radio, Play, Square, Pause, ChevronDown, ChevronUp, Cpu
+  Radio, Play, Square, Pause, ChevronDown, ChevronUp, Cpu,
+  User, Lock, Mail, Calendar, Clock, History as HistoryIcon,
+  Bot, PlayCircle, PauseCircle, Trash2, LogIn, LogOut, UserCheck, Bell, Shield
 } from 'lucide-react';
 
 export default function App() {
@@ -37,6 +39,30 @@ export default function App() {
   const [issueVerificationStatus, setIssueVerificationStatus] = useState({});
   const [recheckingModalUrl, setRecheckingModalUrl] = useState(false);
 
+  // USER AUTHENTICATION STATE
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authModalOpen, setAuthModalOpen] = useState(null); // 'login', 'register', or null
+  const [authForm, setAuthForm] = useState({ email: '', password: '', name: '', isRegister: false });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState(null);
+
+  // AUTOMATIC AUDIT HISTORY STATE
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [savedHistoryList, setSavedHistoryList] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // AUTO-CRAWL & SCHEDULES STATE
+  const [schedulesModalOpen, setSchedulesModalOpen] = useState(false);
+  const [schedulesList, setSchedulesList] = useState([]);
+  const [loadingSchedules, setLoadingSchedules] = useState(false);
+  const [newScheduleForm, setNewScheduleForm] = useState({
+    name: '',
+    targetUrl: 'https://www.cocoonfurnishings.ca/sitemap.xml',
+    frequency: '24h',
+    maxPages: 250,
+    maxDepth: 4
+  });
+
   // Live AJAX / SSE Progress & Log State
   const [progressState, setProgressState] = useState({
     percent: 0,
@@ -55,9 +81,12 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('seo_audit_history_v2');
-      if (saved) setHistory(JSON.parse(saved));
+      const savedUser = localStorage.getItem('seo_pro_user');
+      if (savedUser) setCurrentUser(JSON.parse(savedUser));
     } catch (e) {}
+
+    fetchSavedHistory();
+    fetchSchedules();
   }, []);
 
   // Auto-scroll logs
@@ -244,6 +273,172 @@ export default function App() {
           message: `Verification failed: ${err.message}`
         }
       }));
+    }
+  };
+
+  // ==========================================
+  // AUTHENTICATION HANDLERS
+  // ==========================================
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+
+    const endpoint = authForm.isRegister ? '/api/auth/register' : '/api/auth/login';
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: authForm.email,
+          password: authForm.password,
+          name: authForm.name
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Authentication failed');
+
+      localStorage.setItem('seo_pro_token', data.token);
+      localStorage.setItem('seo_pro_user', JSON.stringify(data.user));
+      setCurrentUser(data.user);
+      setAuthModalOpen(null);
+      setAuthForm({ email: '', password: '', name: '', isRegister: false });
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('seo_pro_token');
+    localStorage.removeItem('seo_pro_user');
+    setCurrentUser(null);
+  };
+
+  // ==========================================
+  // AUTOMATIC HISTORY HANDLERS
+  // ==========================================
+  const fetchSavedHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await fetch('/api/history');
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setSavedHistoryList(data);
+      }
+    } catch (e) {
+      console.error('Failed to load history:', e);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const loadHistorySnapshot = async (id) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/history/${id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load audit snapshot');
+
+      setSiteData(data);
+      setSingleData(data.pages?.[0] || null);
+      setUrlInput(data.rootUrl || data.domain);
+      setHistoryModalOpen(false);
+      setActiveTab('site-health');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteHistoryItem = async (id, e) => {
+    if (e) e.stopPropagation();
+    try {
+      await fetch(`/api/history/${id}`, { method: 'DELETE' });
+      setSavedHistoryList(prev => prev.filter(h => h.id !== id));
+    } catch (e) {
+      console.error('Failed to delete history item:', e);
+    }
+  };
+
+  // ==========================================
+  // AUTO-CRAWL & SCHEDULES HANDLERS
+  // ==========================================
+  const fetchSchedules = async () => {
+    setLoadingSchedules(true);
+    try {
+      const res = await fetch('/api/schedules');
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setSchedulesList(data);
+      }
+    } catch (e) {
+      console.error('Failed to load schedules:', e);
+    } finally {
+      setLoadingSchedules(false);
+    }
+  };
+
+  const handleCreateSchedule = async (e) => {
+    e.preventDefault();
+    if (!newScheduleForm.targetUrl) return;
+
+    try {
+      const res = await fetch('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newScheduleForm)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to create auto-crawl schedule');
+
+      fetchSchedules();
+      setNewScheduleForm({
+        name: '',
+        targetUrl: '',
+        frequency: '24h',
+        maxPages: 250,
+        maxDepth: 4
+      });
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  const handleToggleSchedule = async (id) => {
+    try {
+      const res = await fetch(`/api/schedules/${id}/toggle`, { method: 'PUT' });
+      const data = await res.json();
+      if (data.success) {
+        setSchedulesList(prev => prev.map(s => s.id === id ? data.schedule : s));
+      }
+    } catch (e) {
+      console.error('Failed to toggle schedule:', e);
+    }
+  };
+
+  const handleDeleteSchedule = async (id) => {
+    try {
+      await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+      setSchedulesList(prev => prev.filter(s => s.id !== id));
+    } catch (e) {
+      console.error('Failed to delete schedule:', e);
+    }
+  };
+
+  const handleRunScheduleNow = async (id) => {
+    try {
+      const res = await fetch(`/api/schedules/${id}/run-now`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        alert('🚀 Background crawl initiated! Audit snapshot will automatically appear in your History upon completion.');
+        fetchSchedules();
+        setTimeout(fetchSavedHistory, 3000);
+      }
+    } catch (e) {
+      alert('Failed to start scheduled crawl: ' + e.message);
     }
   };
 
@@ -515,19 +710,98 @@ export default function App() {
             </div>
           </div>
 
-          {siteData && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <button onClick={exportMissingAltCSV} className="btn-secondary" style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171' }} title="Export Missing ALT Images Tracker (CSV)">
-                <ImageIcon size={15} /> Missing ALTs ({siteData.allMissingAltImages?.length || 0})
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            {/* Auto-Crawl Schedules Trigger */}
+            <button
+              onClick={() => { fetchSchedules(); setSchedulesModalOpen(true); }}
+              className="btn-secondary"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '7px 12px',
+                fontSize: '0.8rem',
+                background: 'rgba(99, 102, 241, 0.12)',
+                borderColor: 'rgba(99, 102, 241, 0.4)',
+                color: '#a5b4fc'
+              }}
+              title="Configure background automated crawling schedules"
+            >
+              <Bot size={15} color="#818cf8" /> Auto-Crawl
+              <span className="badge badge-info" style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
+                {schedulesList.filter(s => s.active).length} Active
+              </span>
+            </button>
+
+            {/* Auto-Saved Audit History Trigger */}
+            <button
+              onClick={() => { fetchSavedHistory(); setHistoryModalOpen(true); }}
+              className="btn-secondary"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '7px 12px',
+                fontSize: '0.8rem',
+                background: 'rgba(6, 182, 212, 0.12)',
+                borderColor: 'rgba(6, 182, 212, 0.4)',
+                color: '#67e8f9'
+              }}
+              title="View all automatically saved crawl snapshots"
+            >
+              <HistoryIcon size={15} color="#06b6d4" /> History
+              <span className="badge badge-passed" style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
+                {savedHistoryList.length}
+              </span>
+            </button>
+
+            {/* User Auth / Profile Badge */}
+            {currentUser ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '4px 12px 4px 6px',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  borderRadius: '20px',
+                  border: '1px solid var(--border-subtle)',
+                  fontSize: '0.8rem'
+                }}>
+                  <div style={{ width: '26px', height: '26px', borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #a855f7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '0.75rem', color: '#fff' }}>
+                    {currentUser.name.charAt(0).toUpperCase()}
+                  </div>
+                  <span style={{ fontWeight: 600 }}>{currentUser.name}</span>
+                  <span className="badge badge-passed" style={{ fontSize: '0.68rem', padding: '2px 6px' }}>{currentUser.role || 'Pro'}</span>
+                </div>
+                <button onClick={handleLogout} className="btn-secondary" style={{ padding: '6px 10px', fontSize: '0.75rem' }} title="Sign Out">
+                  <LogOut size={14} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setAuthModalOpen('login')}
+                className="btn-primary"
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', fontSize: '0.8rem' }}
+              >
+                <LogIn size={15} /> Sign In / Register
               </button>
-              <button onClick={exportAllPagesCSV} className="btn-secondary" title="Export Crawled Audit Data (CSV)">
-                <FileSpreadsheet size={15} /> Export CSV ({siteData.pages.length})
-              </button>
-              <button onClick={() => window.print()} className="btn-primary" style={{ padding: '8px 18px', fontSize: '0.85rem' }}>
-                <FileText size={15} /> Print / PDF
-              </button>
-            </div>
-          )}
+            )}
+
+            {siteData && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--border-subtle)', paddingLeft: '10px' }}>
+                <button onClick={exportMissingAltCSV} className="btn-secondary" style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171' }} title="Export Missing ALT Images Tracker (CSV)">
+                  <ImageIcon size={15} /> Missing ALTs ({siteData.allMissingAltImages?.length || 0})
+                </button>
+                <button onClick={exportAllPagesCSV} className="btn-secondary" title="Export Crawled Audit Data (CSV)">
+                  <FileSpreadsheet size={15} /> Export CSV ({siteData.pages.length})
+                </button>
+                <button onClick={() => window.print()} className="btn-primary" style={{ padding: '8px 18px', fontSize: '0.85rem' }}>
+                  <FileText size={15} /> Print / PDF
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1899,6 +2173,480 @@ export default function App() {
                   );
                 })}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* 1. AUTHENTICATION MODAL (LOGIN & REGISTRATION) */}
+        {/* ========================================================================= */}
+        {authModalOpen && (
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 110,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px'
+          }}>
+            <div className="glass-panel" style={{
+              maxWidth: '440px',
+              width: '100%',
+              padding: '28px',
+              background: '#0f172a',
+              border: '1px solid var(--border-focus)',
+              borderRadius: '16px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'linear-gradient(135deg, #6366f1 0%, #06b6d4 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <User size={20} color="#fff" />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.2rem', fontWeight: 800 }}>{authForm.isRegister ? 'Create Account' : 'Welcome Back'}</h3>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{authForm.isRegister ? 'Sign up for Ahrefs SEO Pro' : 'Log in to access your saved crawls'}</p>
+                  </div>
+                </div>
+                <button onClick={() => { setAuthModalOpen(null); setAuthError(null); }} className="btn-secondary" style={{ padding: '6px' }}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Mode Toggle Tabs */}
+              <div style={{ display: 'flex', background: 'rgba(255, 255, 255, 0.04)', padding: '4px', borderRadius: '8px', marginBottom: '20px' }}>
+                <button
+                  type="button"
+                  onClick={() => { setAuthForm(prev => ({ ...prev, isRegister: false })); setAuthError(null); }}
+                  style={{
+                    flex: 1,
+                    padding: '8px',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    border: 'none',
+                    background: !authForm.isRegister ? 'var(--accent-primary)' : 'transparent',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAuthForm(prev => ({ ...prev, isRegister: true })); setAuthError(null); }}
+                  style={{
+                    flex: 1,
+                    padding: '8px',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    border: 'none',
+                    background: authForm.isRegister ? 'var(--accent-primary)' : 'transparent',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  Register
+                </button>
+              </div>
+
+              {authError && (
+                <div style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  color: '#fca5a5',
+                  fontSize: '0.82rem',
+                  marginBottom: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <AlertCircle size={16} />
+                  <span>{authError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {authForm.isRegister && (
+                  <div>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>Full Name</label>
+                    <div style={{ position: 'relative' }}>
+                      <User size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                      <input
+                        type="text"
+                        required
+                        className="input-field"
+                        style={{ paddingLeft: '38px', width: '100%' }}
+                        placeholder="John Doe"
+                        value={authForm.name}
+                        onChange={(e) => setAuthForm(prev => ({ ...prev, name: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>Email Address</label>
+                  <div style={{ position: 'relative' }}>
+                    <Mail size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                    <input
+                      type="email"
+                      required
+                      className="input-field"
+                      style={{ paddingLeft: '38px', width: '100%' }}
+                      placeholder="auditor@domain.com"
+                      value={authForm.email}
+                      onChange={(e) => setAuthForm(prev => ({ ...prev, email: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>Password</label>
+                  <div style={{ position: 'relative' }}>
+                    <Lock size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                    <input
+                      type="password"
+                      required
+                      className="input-field"
+                      style={{ paddingLeft: '38px', width: '100%' }}
+                      placeholder="••••••••"
+                      value={authForm.password}
+                      onChange={(e) => setAuthForm(prev => ({ ...prev, password: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="btn-primary"
+                  style={{ marginTop: '8px', padding: '10px', justifyContent: 'center', width: '100%', fontSize: '0.9rem' }}
+                >
+                  {authLoading ? <RefreshCw size={16} className="animate-spin" /> : authForm.isRegister ? 'Create Pro Account' : 'Sign In Now'}
+                </button>
+              </form>
+
+              {/* Quick Demo Fill */}
+              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthForm({ email: 'demo@seo.pro', password: 'password123', name: 'SEO Lead Auditor', isRegister: false });
+                  }}
+                  className="btn-secondary"
+                  style={{ fontSize: '0.75rem', padding: '6px 12px', width: '100%', justifyContent: 'center' }}
+                >
+                  ⚡ Fill Demo Credentials (demo@seo.pro)
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* 2. AUTO-CRAWL & SCHEDULES MANAGER MODAL */}
+        {/* ========================================================================= */}
+        {schedulesModalOpen && (
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 110,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px'
+          }}>
+            <div className="glass-panel" style={{
+              maxWidth: '920px',
+              width: '100%',
+              maxHeight: '88vh',
+              overflowY: 'auto',
+              padding: '28px',
+              background: '#0f172a',
+              border: '1px solid var(--border-focus)',
+              borderRadius: '16px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div>
+                  <h3 style={{ fontSize: '1.3rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Bot size={22} color="var(--accent-primary)" /> Automated Background Crawling Engine
+                  </h3>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Configure scheduled automated audits. Results are automatically saved into your crawl history.</p>
+                </div>
+                <button onClick={() => setSchedulesModalOpen(false)} className="btn-secondary" style={{ padding: '6px' }}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Add New Schedule Form */}
+              <div style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
+                <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '14px', color: 'var(--accent-secondary)' }}>
+                  + Set Up New Auto-Crawl Schedule
+                </h4>
+                <form onSubmit={handleCreateSchedule} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', alignItems: 'flex-end' }}>
+                  <div>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>Target Website or Sitemap XML URL</label>
+                    <input
+                      type="text"
+                      required
+                      className="input-field"
+                      placeholder="https://example.com/sitemap.xml"
+                      value={newScheduleForm.targetUrl}
+                      onChange={(e) => setNewScheduleForm(prev => ({ ...prev, targetUrl: e.target.value }))}
+                      style={{ width: '100%', fontSize: '0.85rem' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>Schedule Interval</label>
+                    <select
+                      className="input-field"
+                      value={newScheduleForm.frequency}
+                      onChange={(e) => setNewScheduleForm(prev => ({ ...prev, frequency: e.target.value }))}
+                      style={{ width: '100%', fontSize: '0.85rem' }}
+                    >
+                      <option value="30m">Every 30 Minutes</option>
+                      <option value="1h">Every 1 Hour (Hourly)</option>
+                      <option value="6h">Every 6 Hours</option>
+                      <option value="12h">Every 12 Hours</option>
+                      <option value="24h">Daily (Every 24 Hours)</option>
+                      <option value="weekly">Weekly (Every 7 Days)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>Max Pages Limit</label>
+                    <select
+                      className="input-field"
+                      value={newScheduleForm.maxPages}
+                      onChange={(e) => setNewScheduleForm(prev => ({ ...prev, maxPages: e.target.value }))}
+                      style={{ width: '100%', fontSize: '0.85rem' }}
+                    >
+                      <option value="50">50 Pages</option>
+                      <option value="100">100 Pages</option>
+                      <option value="250">250 Pages</option>
+                      <option value="500">500 Pages</option>
+                      <option value="1000">1,000 Pages</option>
+                      <option value="5000">5,000 Pages</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <button type="submit" className="btn-primary" style={{ width: '100%', padding: '9px 16px', justifyContent: 'center', fontSize: '0.85rem' }}>
+                      <Check size={16} /> Save & Activate Schedule
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* Schedules List */}
+              <h4 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '14px' }}>
+                Active Automated Schedules ({schedulesList.length})
+              </h4>
+
+              {schedulesList.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '10px' }}>
+                  <Bot size={36} style={{ margin: '0 auto 10px', color: 'var(--text-dim)' }} />
+                  No automated schedules configured yet. Create one above to let the system audit your sites in the background automatically!
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {schedulesList.map((sch) => (
+                    <div
+                      key={sch.id}
+                      style={{
+                        padding: '16px 20px',
+                        background: 'rgba(255, 255, 255, 0.03)',
+                        borderRadius: '10px',
+                        border: '1px solid ' + (sch.active ? 'rgba(99, 102, 241, 0.3)' : 'var(--border-subtle)'),
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '14px'
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: '240px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                          <span className={`badge ${sch.active ? 'badge-passed' : 'badge-critical'}`} style={{ fontSize: '0.72rem' }}>
+                            {sch.active ? 'Active' : 'Paused'}
+                          </span>
+                          <span className="badge badge-info" style={{ fontSize: '0.72rem' }}>
+                            {sch.frequency === '30m' ? 'Every 30m' : sch.frequency === '1h' ? 'Every Hour' : sch.frequency === '6h' ? 'Every 6 Hours' : sch.frequency === '24h' ? 'Daily' : 'Weekly'}
+                          </span>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Max: {sch.maxPages} pages</span>
+                        </div>
+                        <h5 style={{ fontSize: '0.95rem', fontWeight: 700, wordBreak: 'break-all' }}>{sch.name}</h5>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--accent-secondary)', wordBreak: 'break-all' }}>{sch.targetUrl}</div>
+                        <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                          Next run: {new Date(sch.nextRun).toLocaleString()} | Status: {sch.lastStatus}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button
+                          onClick={() => handleRunScheduleNow(sch.id)}
+                          className="btn-secondary"
+                          style={{ padding: '6px 12px', fontSize: '0.78rem', color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}
+                          title="Run this crawl immediately in the background"
+                        >
+                          <PlayCircle size={14} /> Run Now
+                        </button>
+
+                        <button
+                          onClick={() => handleToggleSchedule(sch.id)}
+                          className="btn-secondary"
+                          style={{ padding: '6px 12px', fontSize: '0.78rem' }}
+                        >
+                          {sch.active ? <><PauseCircle size={14} /> Pause</> : <><PlayCircle size={14} /> Resume</>}
+                        </button>
+
+                        <button
+                          onClick={() => handleDeleteSchedule(sch.id)}
+                          className="btn-secondary"
+                          style={{ padding: '6px 10px', fontSize: '0.78rem', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                          title="Delete Schedule"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* 3. AUTOMATIC AUDIT HISTORY EXPLORER MODAL */}
+        {/* ========================================================================= */}
+        {historyModalOpen && (
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 110,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px'
+          }}>
+            <div className="glass-panel" style={{
+              maxWidth: '960px',
+              width: '100%',
+              maxHeight: '88vh',
+              overflowY: 'auto',
+              padding: '28px',
+              background: '#0f172a',
+              border: '1px solid var(--border-focus)',
+              borderRadius: '16px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div>
+                  <h3 style={{ fontSize: '1.3rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <HistoryIcon size={22} color="#06b6d4" /> Automatically Saved Audit History ({savedHistoryList.length})
+                  </h3>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Every completed audit snapshot is saved automatically with full metrics and issue details.</p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button onClick={fetchSavedHistory} className="btn-secondary" style={{ padding: '6px 12px', fontSize: '0.8rem' }}>
+                    <RefreshCw size={13} className={loadingHistory ? 'animate-spin' : ''} /> Refresh
+                  </button>
+                  <button onClick={() => setHistoryModalOpen(false)} className="btn-secondary" style={{ padding: '6px' }}>
+                    <X size={18} />
+                  </button>
+                </div>
+              </div>
+
+              {savedHistoryList.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                  <HistoryIcon size={36} style={{ margin: '0 auto 10px', color: 'var(--text-dim)' }} />
+                  No audit history saved yet. Run your first audit to see it automatically recorded here!
+                </div>
+              ) : (
+                <div className="table-container" style={{ maxHeight: '550px' }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Domain & Root URL</th>
+                        <th>Health Score</th>
+                        <th>Pages Audited</th>
+                        <th>Missing ALTs</th>
+                        <th>Type</th>
+                        <th>Timestamp</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {savedHistoryList.map((item) => (
+                        <tr key={item.id}>
+                          <td style={{ maxWidth: '280px' }}>
+                            <div style={{ fontWeight: 700, color: '#fff', fontSize: '0.88rem' }}>{item.domain}</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--accent-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {item.rootUrl}
+                            </div>
+                          </td>
+                          <td>
+                            <span className={`badge ${item.score >= 80 ? 'badge-passed' : item.score >= 60 ? 'badge-warning' : 'badge-critical'}`} style={{ fontWeight: 700 }}>
+                              {item.score}% ({item.grade})
+                            </span>
+                          </td>
+                          <td style={{ fontSize: '0.85rem' }}>{item.totalPages} Pages</td>
+                          <td>
+                            {item.missingAltCount > 0 ? (
+                              <span className="badge badge-critical" style={{ fontSize: '0.74rem' }}>{item.missingAltCount} Missing</span>
+                            ) : (
+                              <span className="badge badge-passed" style={{ fontSize: '0.74rem' }}>0</span>
+                            )}
+                          </td>
+                          <td>
+                            {item.isAutoCrawl ? (
+                              <span className="badge badge-info" style={{ fontSize: '0.72rem' }}>🤖 Auto-Crawl</span>
+                            ) : (
+                              <span className="badge" style={{ fontSize: '0.72rem', background: 'rgba(255, 255, 255, 0.06)', color: 'var(--text-muted)' }}>Manual</span>
+                            )}
+                          </td>
+                          <td style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
+                            {new Date(item.timestamp).toLocaleString()}
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <button
+                                onClick={() => loadHistorySnapshot(item.id)}
+                                className="btn-primary"
+                                style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                                title="Load this complete snapshot into the main audit view"
+                              >
+                                <Eye size={12} /> Load
+                              </button>
+                              <button
+                                onClick={(e) => deleteHistoryItem(item.id, e)}
+                                className="btn-secondary"
+                                style={{ padding: '4px 8px', fontSize: '0.75rem', color: '#f87171' }}
+                                title="Delete from history"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}
