@@ -31,6 +31,12 @@ export default function App() {
   const [expandedIssue, setExpandedIssue] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
 
+  // Live Checkmark & Resolution Verification State
+  const [urlVerificationStatus, setUrlVerificationStatus] = useState({});
+  const [imageVerificationStatus, setImageVerificationStatus] = useState({});
+  const [issueVerificationStatus, setIssueVerificationStatus] = useState({});
+  const [recheckingModalUrl, setRecheckingModalUrl] = useState(false);
+
   // Live AJAX / SSE Progress & Log State
   const [progressState, setProgressState] = useState({
     percent: 0,
@@ -65,6 +71,180 @@ export default function App() {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  // Live Checkmark Resolution Handlers
+  const verifyAndResolveUrl = async (targetUrl, e) => {
+    if (e) e.stopPropagation();
+    
+    setUrlVerificationStatus(prev => ({
+      ...prev,
+      [targetUrl]: { status: 'checking', message: 'Auditing live URL...' }
+    }));
+
+    try {
+      const res = await fetch('/api/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to re-audit URL');
+
+      const criticalCount = (data.issues || []).filter(i => i.severity === 'Critical').length;
+      const warningCount = (data.issues || []).filter(i => i.severity === 'Warning').length;
+      const missingAltCount = data.images?.missingAlt || 0;
+      const isClean = criticalCount === 0 && missingAltCount === 0 && data.statusCode === 200;
+      const isResolved = isClean || (data.score >= 85 && data.statusCode === 200);
+
+      const statusResult = isResolved ? 'completed' : 'still_error';
+      const message = isResolved
+        ? `✓ Resolved! Score: ${data.score}% | 0 Missing ALTs`
+        : `Still Error: ${missingAltCount > 0 ? `${missingAltCount} Missing ALTs, ` : ''}${criticalCount + warningCount} Issues (Score: ${data.score}%)`;
+
+      setUrlVerificationStatus(prev => ({
+        ...prev,
+        [targetUrl]: {
+          status: statusResult,
+          lastChecked: new Date().toLocaleTimeString(),
+          score: data.score,
+          statusCode: data.statusCode,
+          missingAltCount,
+          criticalCount,
+          warningCount,
+          message,
+          data
+        }
+      }));
+
+      // Update siteData dynamically
+      if (siteData && siteData.pages) {
+        setSiteData(prev => {
+          if (!prev) return prev;
+          const updatedPages = prev.pages.map(p => p.url === targetUrl ? { ...p, ...data } : p);
+          return {
+            ...prev,
+            pages: updatedPages
+          };
+        });
+      }
+
+      if (selectedPageModal && selectedPageModal.url === targetUrl) {
+        setSelectedPageModal(data);
+      }
+    } catch (err) {
+      setUrlVerificationStatus(prev => ({
+        ...prev,
+        [targetUrl]: {
+          status: 'still_error',
+          lastChecked: new Date().toLocaleTimeString(),
+          message: `Check failed: ${err.message}`
+        }
+      }));
+    }
+  };
+
+  const verifyAndResolveImageAlt = async (pageUrl, imgSrc, e) => {
+    if (e) e.stopPropagation();
+    const key = `${pageUrl}::${imgSrc}`;
+
+    setImageVerificationStatus(prev => ({
+      ...prev,
+      [key]: { status: 'checking', message: 'Checking live <img> tag...' }
+    }));
+
+    try {
+      const res = await fetch('/api/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: pageUrl })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch page');
+
+      const foundImage = (data.images?.list || []).find(img => img.src === imgSrc || img.rawSrc === imgSrc || (img.src && imgSrc && imgSrc.endsWith(img.src.split('/').pop())));
+
+      if (foundImage && foundImage.hasAlt && foundImage.alt.trim().length > 0) {
+        setImageVerificationStatus(prev => ({
+          ...prev,
+          [key]: {
+            status: 'completed',
+            lastChecked: new Date().toLocaleTimeString(),
+            message: `✓ Resolved! ALT: "${foundImage.alt}"`,
+            altText: foundImage.alt
+          }
+        }));
+      } else {
+        setImageVerificationStatus(prev => ({
+          ...prev,
+          [key]: {
+            status: 'still_error',
+            lastChecked: new Date().toLocaleTimeString(),
+            message: '❌ Still Error: ALT attribute is still missing on live page.'
+          }
+        }));
+      }
+    } catch (err) {
+      setImageVerificationStatus(prev => ({
+        ...prev,
+        [key]: {
+          status: 'still_error',
+          lastChecked: new Date().toLocaleTimeString(),
+          message: `Failed to check: ${err.message}`
+        }
+      }));
+    }
+  };
+
+  const verifyAndResolveIssue = async (issueTitle, targetUrl, e) => {
+    if (e) e.stopPropagation();
+    const key = `${issueTitle}::${targetUrl}`;
+
+    setIssueVerificationStatus(prev => ({
+      ...prev,
+      [key]: { status: 'checking', message: 'Checking live URL...' }
+    }));
+
+    try {
+      const res = await fetch('/api/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to audit URL');
+
+      const stillExists = (data.issues || []).some(iss => iss.title.toLowerCase() === issueTitle.toLowerCase());
+
+      if (!stillExists) {
+        setIssueVerificationStatus(prev => ({
+          ...prev,
+          [key]: {
+            status: 'completed',
+            lastChecked: new Date().toLocaleTimeString(),
+            message: '✓ Verified Fixed! Issue is resolved.'
+          }
+        }));
+      } else {
+        setIssueVerificationStatus(prev => ({
+          ...prev,
+          [key]: {
+            status: 'still_error',
+            lastChecked: new Date().toLocaleTimeString(),
+            message: '❌ Still Error: Issue is still present on this page.'
+          }
+        }));
+      }
+    } catch (err) {
+      setIssueVerificationStatus(prev => ({
+        ...prev,
+        [key]: {
+          status: 'still_error',
+          lastChecked: new Date().toLocaleTimeString(),
+          message: `Verification failed: ${err.message}`
+        }
+      }));
+    }
   };
 
   const effectiveMaxPages = customPagesInput ? parseInt(customPagesInput, 10) || 100 : maxPages;
@@ -874,14 +1054,60 @@ export default function App() {
                               "{img.suggestedAlt}"
                             </div>
                           </td>
-                          <td>
+                          <td style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             <button
                               onClick={() => copyText(img.htmlSnippet, `site-${i}`)}
                               className="btn-secondary"
-                              style={{ padding: '6px 10px', fontSize: '0.75rem', width: '100%', justifyContent: 'center' }}
+                              style={{ padding: '5px 10px', fontSize: '0.75rem', width: '100%', justifyContent: 'center' }}
                             >
-                              {copiedId === `site-${i}` ? <><CheckCheck size={13} color="#10b981" /> Copied</> : <><Copy size={13} /> Copy HTML</>}
+                              {copiedId === `site-${i}` ? <><CheckCheck size={13} color="#10b981" /> Copied Fix</> : <><Copy size={13} /> Copy HTML Fix</>}
                             </button>
+
+                            {(() => {
+                              const key = `${img.pageUrl}::${img.imgSrc}`;
+                              const imgStatus = imageVerificationStatus[key];
+                              if (imgStatus?.status === 'checking') {
+                                return (
+                                  <span className="badge badge-info" style={{ justifyContent: 'center', padding: '4px 8px', fontSize: '0.72rem' }}>
+                                    <RefreshCw size={11} className="animate-spin" /> Verifying Live...
+                                  </span>
+                                );
+                              }
+                              if (imgStatus?.status === 'completed') {
+                                return (
+                                  <button
+                                    onClick={(e) => verifyAndResolveImageAlt(img.pageUrl, img.imgSrc, e)}
+                                    className="badge badge-passed"
+                                    style={{ justifyContent: 'center', padding: '4px 8px', fontSize: '0.72rem', border: 'none', cursor: 'pointer' }}
+                                    title={imgStatus.message}
+                                  >
+                                    <CheckCircle2 size={12} color="#10b981" /> ALT Resolved!
+                                  </button>
+                                );
+                              }
+                              if (imgStatus?.status === 'still_error') {
+                                return (
+                                  <button
+                                    onClick={(e) => verifyAndResolveImageAlt(img.pageUrl, img.imgSrc, e)}
+                                    className="badge badge-critical"
+                                    style={{ justifyContent: 'center', padding: '4px 8px', fontSize: '0.72rem', border: 'none', cursor: 'pointer' }}
+                                    title={imgStatus.message}
+                                  >
+                                    <AlertCircle size={12} /> Still Missing (Re-test)
+                                  </button>
+                                );
+                              }
+                              return (
+                                <button
+                                  onClick={(e) => verifyAndResolveImageAlt(img.pageUrl, img.imgSrc, e)}
+                                  className="btn-secondary"
+                                  style={{ padding: '4px 8px', fontSize: '0.72rem', width: '100%', justifyContent: 'center', color: '#34d399', borderColor: 'rgba(52, 211, 153, 0.3)' }}
+                                  title="Audit live page to verify if ALT attribute is now present"
+                                >
+                                  <Check size={12} /> Check Live ALT
+                                </button>
+                              );
+                            })()}
                           </td>
                         </tr>
                       ))}
@@ -928,6 +1154,36 @@ export default function App() {
                   </div>
                 </div>
 
+                {Object.keys(urlVerificationStatus).length > 0 && (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: 'rgba(99, 102, 241, 0.12)',
+                    border: '1px solid rgba(99, 102, 241, 0.3)',
+                    borderRadius: '10px',
+                    padding: '10px 16px',
+                    marginBottom: '14px',
+                    fontSize: '0.84rem',
+                    flexWrap: 'wrap',
+                    gap: '10px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <CheckCheck size={18} color="var(--accent-primary)" />
+                      <span style={{ fontWeight: 700 }}>Live Problem Resolution Tracker:</span>
+                      <span className="badge badge-passed" style={{ fontSize: '0.78rem', padding: '3px 10px' }}>
+                        ✓ {Object.values(urlVerificationStatus).filter(s => s.status === 'completed').length} Verified Resolved
+                      </span>
+                      <span className="badge badge-critical" style={{ fontSize: '0.78rem', padding: '3px 10px' }}>
+                        ⚠️ {Object.values(urlVerificationStatus).filter(s => s.status === 'still_error').length} Still Unresolved
+                      </span>
+                    </div>
+                    <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>
+                      Auditing live URLs directly on click
+                    </span>
+                  </div>
+                )}
+
                 <div className="table-container" style={{ maxHeight: '600px' }}>
                   <table className="data-table">
                     <thead>
@@ -939,13 +1195,14 @@ export default function App() {
                         <th>H1 Tag</th>
                         <th>Words</th>
                         <th>Missing Alt</th>
+                        <th style={{ minWidth: '150px' }}>Live Resolution Check</th>
                         <th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredPages.map((page, i) => (
                         <tr key={i} style={{ cursor: 'pointer' }} onClick={() => setSelectedPageModal(page)}>
-                          <td style={{ maxWidth: '420px' }}>
+                          <td style={{ maxWidth: '380px' }}>
                             <div style={{ fontWeight: 600, color: '#fff', fontSize: '0.88rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {page.meta?.title || <span style={{ color: 'var(--text-dim)' }}>[No Title]</span>}
                             </div>
@@ -966,7 +1223,7 @@ export default function App() {
                               {page.score}%
                             </span>
                           </td>
-                          <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem' }}>
+                          <td style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem' }}>
                             {page.headings?.h1?.[0] || <span style={{ color: '#ef4444' }}>Missing H1</span>}
                           </td>
                           <td style={{ fontSize: '0.8rem' }}>{page.content?.wordCount?.toLocaleString() || 0}</td>
@@ -978,12 +1235,75 @@ export default function App() {
                             )}
                           </td>
                           <td>
+                            {(() => {
+                              const vStatus = urlVerificationStatus[page.url];
+                              if (vStatus?.status === 'checking') {
+                                return (
+                                  <span className="badge badge-info" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', padding: '5px 10px' }}>
+                                    <RefreshCw size={12} className="animate-spin" /> Verifying...
+                                  </span>
+                                );
+                              }
+                              if (vStatus?.status === 'completed') {
+                                return (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                    <button
+                                      onClick={(e) => verifyAndResolveUrl(page.url, e)}
+                                      className="badge badge-passed"
+                                      style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', padding: '4px 10px', cursor: 'pointer', border: 'none' }}
+                                      title="Click to re-audit live URL again"
+                                    >
+                                      <CheckCircle2 size={13} color="#10b981" /> Completed ({vStatus.score}%)
+                                    </button>
+                                    <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)' }}>Verified at {vStatus.lastChecked}</span>
+                                  </div>
+                                );
+                              }
+                              if (vStatus?.status === 'still_error') {
+                                return (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                    <button
+                                      onClick={(e) => verifyAndResolveUrl(page.url, e)}
+                                      className="badge badge-critical"
+                                      style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', padding: '4px 10px', cursor: 'pointer', border: 'none' }}
+                                      title={vStatus.message}
+                                    >
+                                      <AlertTriangle size={12} /> Still Error ({vStatus.missingAltCount || 0} ALTs)
+                                    </button>
+                                    <span style={{ fontSize: '0.68rem', color: '#f87171' }}>Click to Re-test</span>
+                                  </div>
+                                );
+                              }
+                              // Default initial state:
+                              const hasAnyIssues = (page.score < 80) || (page.images?.missingAlt > 0) || (page.statusCode !== 200);
+                              return (
+                                <button
+                                  onClick={(e) => verifyAndResolveUrl(page.url, e)}
+                                  className="btn-secondary"
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: '0.74rem',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '5px',
+                                    background: hasAnyIssues ? 'rgba(239, 68, 68, 0.08)' : 'rgba(16, 185, 129, 0.08)',
+                                    borderColor: hasAnyIssues ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)',
+                                    color: hasAnyIssues ? '#fca5a5' : '#86efac'
+                                  }}
+                                  title="Check and verify if problems on this URL are resolved"
+                                >
+                                  <Check size={12} /> Mark Fixed & Check
+                                </button>
+                              );
+                            })()}
+                          </td>
+                          <td>
                             <button
                               onClick={(e) => { e.stopPropagation(); setSelectedPageModal(page); }}
                               className="btn-secondary"
                               style={{ padding: '4px 10px', fontSize: '0.75rem' }}
                             >
-                              Inspect Images & ALTs <ChevronRight size={13} />
+                              Inspect <ChevronRight size={13} />
                             </button>
                           </td>
                         </tr>
@@ -1117,30 +1437,98 @@ export default function App() {
                           </div>
 
                           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Affected Page List:</div>
-                          <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            {issue.affectedUrls.map((affUrl, uIdx) => (
-                              <div
-                                key={uIdx}
-                                onClick={() => {
-                                  const targetP = siteData.pages.find(p => p.url === affUrl);
-                                  if (targetP) setSelectedPageModal(targetP);
-                                }}
-                                style={{
-                                  padding: '8px 12px',
-                                  background: 'rgba(255, 255, 255, 0.03)',
-                                  borderRadius: '6px',
-                                  fontSize: '0.82rem',
-                                  color: 'var(--accent-secondary)',
-                                  cursor: 'pointer',
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  alignItems: 'center'
-                                }}
-                              >
-                                <span>{affUrl}</span>
-                                <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Inspect Images &rarr;</span>
-                              </div>
-                            ))}
+                          <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {issue.affectedUrls.map((affUrl, uIdx) => {
+                              const key = `${issue.title}::${affUrl}`;
+                              const issStatus = issueVerificationStatus[key];
+                              return (
+                                <div
+                                  key={uIdx}
+                                  style={{
+                                    padding: '8px 12px',
+                                    background: 'rgba(255, 255, 255, 0.03)',
+                                    borderRadius: '6px',
+                                    fontSize: '0.82rem',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    gap: '10px'
+                                  }}
+                                >
+                                  <span
+                                    onClick={() => {
+                                      const targetP = siteData.pages.find(p => p.url === affUrl);
+                                      if (targetP) setSelectedPageModal(targetP);
+                                    }}
+                                    style={{
+                                      color: 'var(--accent-secondary)',
+                                      cursor: 'pointer',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                      flex: 1
+                                    }}
+                                  >
+                                    {affUrl}
+                                  </span>
+
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                                    {(() => {
+                                      if (issStatus?.status === 'checking') {
+                                        return (
+                                          <span className="badge badge-info" style={{ fontSize: '0.72rem', padding: '3px 8px' }}>
+                                            <RefreshCw size={11} className="animate-spin" /> Verifying...
+                                          </span>
+                                        );
+                                      }
+                                      if (issStatus?.status === 'completed') {
+                                        return (
+                                          <button
+                                            onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
+                                            className="badge badge-passed"
+                                            style={{ fontSize: '0.72rem', padding: '3px 8px', border: 'none', cursor: 'pointer' }}
+                                          >
+                                            <CheckCircle2 size={11} color="#10b981" /> Resolved
+                                          </button>
+                                        );
+                                      }
+                                      if (issStatus?.status === 'still_error') {
+                                        return (
+                                          <button
+                                            onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
+                                            className="badge badge-critical"
+                                            style={{ fontSize: '0.72rem', padding: '3px 8px', border: 'none', cursor: 'pointer' }}
+                                            title="Issue still present on this page"
+                                          >
+                                            <AlertTriangle size={11} /> Still Error (Re-test)
+                                          </button>
+                                        );
+                                      }
+                                      return (
+                                        <button
+                                          onClick={(e) => verifyAndResolveIssue(issue.title, affUrl, e)}
+                                          className="btn-secondary"
+                                          style={{ padding: '3px 8px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                        >
+                                          <Check size={11} /> Verify Fix
+                                        </button>
+                                      );
+                                    })()}
+
+                                    <button
+                                      onClick={() => {
+                                        const targetP = siteData.pages.find(p => p.url === affUrl);
+                                        if (targetP) setSelectedPageModal(targetP);
+                                      }}
+                                      className="btn-secondary"
+                                      style={{ padding: '3px 8px', fontSize: '0.72rem' }}
+                                    >
+                                      Inspect &rarr;
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -1224,7 +1612,7 @@ export default function App() {
               background: '#0f172a',
               border: '1px solid var(--border-focus)'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
                     <span className={`badge ${selectedPageModal.score >= 80 ? 'badge-passed' : selectedPageModal.score >= 60 ? 'badge-warning' : 'badge-critical'}`}>
@@ -1234,14 +1622,48 @@ export default function App() {
                     <span style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>Crawl Depth: Level {selectedPageModal.depth}</span>
                   </div>
                   <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '4px' }}>{selectedPageModal.meta?.title || '[No Title]'}</h3>
-                  <a href={selectedPageModal.url} target="_blank" rel="noreferrer" style={{ fontSize: '0.85rem', color: 'var(--accent-secondary)', textDecoration: 'none' }}>
-                    {selectedPageModal.url}
+                  <a href={selectedPageModal.url} target="_blank" rel="noreferrer" style={{ fontSize: '0.85rem', color: 'var(--accent-secondary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    {selectedPageModal.url} <ExternalLink size={12} />
                   </a>
                 </div>
-                <button onClick={() => setSelectedPageModal(null)} className="btn-secondary" style={{ padding: '6px' }}>
-                  <X size={18} />
-                </button>
+                
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <button
+                    onClick={(e) => verifyAndResolveUrl(selectedPageModal.url, e)}
+                    className="btn-primary"
+                    style={{ padding: '7px 14px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    {urlVerificationStatus[selectedPageModal.url]?.status === 'checking' ? (
+                      <><RefreshCw size={13} className="animate-spin" /> Verifying Live...</>
+                    ) : urlVerificationStatus[selectedPageModal.url]?.status === 'completed' ? (
+                      <><CheckCircle2 size={14} /> Re-Verify Live URL</>
+                    ) : (
+                      <><Check size={14} /> Re-Audit & Verify Live Fixes</>
+                    )}
+                  </button>
+                  <button onClick={() => setSelectedPageModal(null)} className="btn-secondary" style={{ padding: '6px' }}>
+                    <X size={18} />
+                  </button>
+                </div>
               </div>
+
+              {urlVerificationStatus[selectedPageModal.url] && (
+                <div style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  marginBottom: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '0.85rem',
+                  background: urlVerificationStatus[selectedPageModal.url].status === 'completed' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  border: `1px solid ${urlVerificationStatus[selectedPageModal.url].status === 'completed' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                  color: urlVerificationStatus[selectedPageModal.url].status === 'completed' ? '#86efac' : '#fca5a5'
+                }}>
+                  {urlVerificationStatus[selectedPageModal.url].status === 'completed' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                  <span>{urlVerificationStatus[selectedPageModal.url].message}</span>
+                </div>
+              )}
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '20px' }}>
                 <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
@@ -1307,86 +1729,175 @@ export default function App() {
                       All images on this page have descriptive ALT tags!
                     </div>
                   ) : (
-                    (modalImgTab === 'missing' ? selectedPageModal.images?.missingAltList : selectedPageModal.images?.list)?.map((img, idx) => (
-                      <div
-                        key={idx}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '14px',
-                          padding: '12px',
-                          background: 'rgba(255, 255, 255, 0.03)',
-                          borderRadius: '8px',
-                          border: '1px solid ' + (img.hasAlt ? 'var(--border-subtle)' : 'rgba(239, 68, 68, 0.3)')
-                        }}
-                      >
-                        <div style={{ width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', background: '#0a0d14', border: '1px solid var(--border-subtle)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <img
-                            src={img.src}
-                            alt={img.alt || img.suggestedAlt}
-                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                          />
-                        </div>
-
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
-                            {img.hasAlt ? (
-                              <span className="badge badge-passed" style={{ fontSize: '0.7rem' }}>ALT: "{img.alt}"</span>
-                            ) : (
-                              <span className="badge badge-critical" style={{ fontSize: '0.7rem' }}>Missing ALT Attribute</span>
-                            )}
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Image #{img.index || idx + 1}</span>
+                    (modalImgTab === 'missing' ? selectedPageModal.images?.missingAltList : selectedPageModal.images?.list)?.map((img, idx) => {
+                      const imgKey = `${selectedPageModal.url}::${img.src}`;
+                      const imgStatus = imageVerificationStatus[imgKey];
+                      return (
+                        <div
+                          key={idx}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '14px',
+                            padding: '12px',
+                            background: 'rgba(255, 255, 255, 0.03)',
+                            borderRadius: '8px',
+                            border: '1px solid ' + (img.hasAlt ? 'var(--border-subtle)' : 'rgba(239, 68, 68, 0.3)')
+                          }}
+                        >
+                          <div style={{ width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', background: '#0a0d14', border: '1px solid var(--border-subtle)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <img
+                              src={img.src}
+                              alt={img.alt || img.suggestedAlt}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                            />
                           </div>
 
-                          <div style={{ fontSize: '0.82rem', color: 'var(--accent-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {img.src}
-                          </div>
-
-                          {!img.hasAlt && (
-                            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                              <span style={{ color: '#34d399', fontWeight: 600 }}>Suggested ALT: </span>"{img.suggestedAlt}"
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                              {img.hasAlt ? (
+                                <span className="badge badge-passed" style={{ fontSize: '0.7rem' }}>ALT: "{img.alt}"</span>
+                              ) : (
+                                <span className="badge badge-critical" style={{ fontSize: '0.7rem' }}>Missing ALT Attribute</span>
+                              )}
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Image #{img.index || idx + 1}</span>
                             </div>
-                          )}
-                        </div>
 
-                        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-                          <a
-                            href={img.src}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="btn-secondary"
-                            style={{ padding: '6px 8px', fontSize: '0.75rem', textDecoration: 'none' }}
-                            title="Open image in new tab"
-                          >
-                            <ExternalLink size={13} />
-                          </a>
-                          <button
-                            onClick={() => copyText(img.htmlSnippet, `modal-${idx}`)}
-                            className="btn-secondary"
-                            style={{ padding: '6px 10px', fontSize: '0.75rem' }}
-                            title="Copy complete <img> tag with suggested ALT text"
-                          >
-                            {copiedId === `modal-${idx}` ? <CheckCheck size={13} color="#10b981" /> : <Copy size={13} />}
-                          </button>
+                            <div style={{ fontSize: '0.82rem', color: 'var(--accent-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {img.src}
+                            </div>
+
+                            {!img.hasAlt && (
+                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                                <span style={{ color: '#34d399', fontWeight: 600 }}>Suggested ALT: </span>"{img.suggestedAlt}"
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                            <a
+                              href={img.src}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="btn-secondary"
+                              style={{ padding: '6px 8px', fontSize: '0.75rem', textDecoration: 'none' }}
+                              title="Open image in new tab"
+                            >
+                              <ExternalLink size={13} />
+                            </a>
+                            <button
+                              onClick={() => copyText(img.htmlSnippet, `modal-${idx}`)}
+                              className="btn-secondary"
+                              style={{ padding: '6px 10px', fontSize: '0.75rem' }}
+                              title="Copy complete <img> tag with suggested ALT text"
+                            >
+                              {copiedId === `modal-${idx}` ? <CheckCheck size={13} color="#10b981" /> : <Copy size={13} />}
+                            </button>
+
+                            {(() => {
+                              if (imgStatus?.status === 'checking') {
+                                return (
+                                  <span className="badge badge-info" style={{ padding: '5px 8px', fontSize: '0.72rem' }}>
+                                    <RefreshCw size={11} className="animate-spin" />
+                                  </span>
+                                );
+                              }
+                              if (imgStatus?.status === 'completed') {
+                                return (
+                                  <span className="badge badge-passed" style={{ padding: '5px 8px', fontSize: '0.72rem' }} title={imgStatus.message}>
+                                    <CheckCircle2 size={12} color="#10b981" /> Verified
+                                  </span>
+                                );
+                              }
+                              if (imgStatus?.status === 'still_error') {
+                                return (
+                                  <button
+                                    onClick={(e) => verifyAndResolveImageAlt(selectedPageModal.url, img.src, e)}
+                                    className="badge badge-critical"
+                                    style={{ padding: '5px 8px', fontSize: '0.72rem', cursor: 'pointer', border: 'none' }}
+                                    title="Still missing on live site. Click to retry."
+                                  >
+                                    <AlertTriangle size={11} /> Missing
+                                  </button>
+                                );
+                              }
+                              return (
+                                <button
+                                  onClick={(e) => verifyAndResolveImageAlt(selectedPageModal.url, img.src, e)}
+                                  className="btn-secondary"
+                                  style={{ padding: '5px 8px', fontSize: '0.72rem', color: '#34d399', borderColor: 'rgba(52, 211, 153, 0.3)' }}
+                                  title="Check if ALT tag exists on live page"
+                                >
+                                  <Check size={12} /> Verify
+                                </button>
+                              );
+                            })()}
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
 
               <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '10px' }}>Other Technical Issues on this URL:</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {(selectedPageModal.issues || []).map((iss, i) => (
-                  <div key={i} style={{ padding: '10px 14px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <span className={`badge ${iss.severity === 'Critical' ? 'badge-critical' : iss.severity === 'Warning' ? 'badge-warning' : 'badge-passed'}`}>{iss.severity}</span>
-                      <span style={{ fontWeight: 600, fontSize: '0.88rem' }}>{iss.title}</span>
+                {(selectedPageModal.issues || []).map((iss, i) => {
+                  const issueKey = `${iss.title}::${selectedPageModal.url}`;
+                  const issStatus = issueVerificationStatus[issueKey];
+                  return (
+                    <div key={i} style={{ padding: '12px 16px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '8px', border: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <span className={`badge ${iss.severity === 'Critical' ? 'badge-critical' : iss.severity === 'Warning' ? 'badge-warning' : 'badge-passed'}`}>{iss.severity}</span>
+                          <span style={{ fontWeight: 600, fontSize: '0.88rem' }}>{iss.title}</span>
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>{iss.description}</div>
+                      </div>
+
+                      <div>
+                        {(() => {
+                          if (issStatus?.status === 'checking') {
+                            return (
+                              <span className="badge badge-info" style={{ fontSize: '0.74rem', padding: '4px 8px' }}>
+                                <RefreshCw size={11} className="animate-spin" /> Verifying...
+                              </span>
+                            );
+                          }
+                          if (issStatus?.status === 'completed') {
+                            return (
+                              <span className="badge badge-passed" style={{ fontSize: '0.74rem', padding: '4px 8px' }}>
+                                <CheckCircle2 size={12} color="#10b981" /> Resolved
+                              </span>
+                            );
+                          }
+                          if (issStatus?.status === 'still_error') {
+                            return (
+                              <button
+                                onClick={(e) => verifyAndResolveIssue(iss.title, selectedPageModal.url, e)}
+                                className="badge badge-critical"
+                                style={{ fontSize: '0.74rem', padding: '4px 8px', border: 'none', cursor: 'pointer' }}
+                                title="Issue still detected"
+                              >
+                                <AlertTriangle size={11} /> Still Error (Re-test)
+                              </button>
+                            );
+                          }
+                          return (
+                            <button
+                              onClick={(e) => verifyAndResolveIssue(iss.title, selectedPageModal.url, e)}
+                              className="btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: '0.74rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                            >
+                              <Check size={12} /> Verify Fix
+                            </button>
+                          );
+                        })()}
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>{iss.description}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
