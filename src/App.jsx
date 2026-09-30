@@ -740,56 +740,81 @@ export default function App() {
 
   const effectiveMaxPages = customPagesInput ? parseInt(customPagesInput) : maxPages;
 
-  // Overview Dynamic / Fallback Dataset
-  const activeScore = siteData ? siteData.siteHealthScore : 96;
-  const activeDomain = siteData ? siteData.domain : 'cocoonfurnishings.ca';
+  // ==========================================
+  // REAL-TIME LIVE AUDIT OVERVIEW CALCULATIONS
+  // ==========================================
+  const activeScore = siteData ? siteData.siteHealthScore : 0;
+  const activeDomain = siteData ? siteData.domain : (urlInput ? new URL(normalizeUrl(urlInput)).hostname : 'domain.com');
   
-  const crawledDist = siteData ? {
-    internal: siteData.pages?.length || 643,
-    external: siteData.pages?.reduce((acc, p) => acc + (p.links?.externalCount || 0), 0) || 180,
-    resources: siteData.pages?.reduce((acc, p) => acc + (p.images?.total || 0), 0) || 1315,
-    total: (siteData.pages?.length || 643) + (siteData.pages?.reduce((acc, p) => acc + (p.links?.externalCount || 0), 0) || 180) + (siteData.pages?.reduce((acc, p) => acc + (p.images?.total || 0), 0) || 1315)
-  } : { internal: 643, external: 180, resources: 1315, total: 2138 };
+  // 1. Crawled URLs Distribution (Real Internal, External, and Media Resources)
+  const realInternalCount = siteData ? siteData.pages.length : 0;
+  const externalSet = new Set();
+  if (siteData && siteData.pages) {
+    siteData.pages.forEach(p => {
+      (p.links?.discoveredExternal || []).forEach(e => externalSet.add(e));
+    });
+  }
+  const realExternalCount = siteData ? (externalSet.size > 0 ? externalSet.size : siteData.pages.reduce((acc, p) => acc + (p.links?.externalCount || 0), 0)) : 0;
+  const realResourcesCount = siteData ? siteData.pages.reduce((acc, p) => acc + (p.images?.total || 0), 0) : 0;
+  const crawledDist = {
+    internal: realInternalCount,
+    external: realExternalCount,
+    resources: realResourcesCount,
+    total: realInternalCount + realExternalCount + realResourcesCount
+  };
 
-  const crawlStatusDist = siteData ? {
-    crawled: siteData.stats?.totalPagesCrawled || 19631,
-    uncrawled: Math.max(0, (siteData.stats?.totalDiscoveredUrls || 24155) - (siteData.stats?.totalPagesCrawled || 19631)),
-    blocked: siteData.stats?.errorPages || 2093,
-    total: siteData.stats?.totalDiscoveredUrls || 24155
-  } : { crawled: 19631, uncrawled: 2431, blocked: 2093, total: 24155 };
+  // 2. Crawl Status of Links Found (Real Crawled, Discovered, and Error status)
+  const realCrawledLinks = siteData ? siteData.pages.length : 0;
+  const realTotalDiscovered = siteData ? (siteData.stats?.totalDiscoveredUrls ?? siteData.allDiscoveredUrls?.length ?? realCrawledLinks) : 0;
+  const realUncrawledLinks = Math.max(0, realTotalDiscovered - realCrawledLinks);
+  const realBlockedOrErrors = siteData ? siteData.pages.filter(p => p.isBroken || p.statusCode >= 400).length : 0;
+  const crawlStatusDist = {
+    crawled: realCrawledLinks,
+    uncrawled: realUncrawledLinks,
+    blocked: realBlockedOrErrors,
+    total: realTotalDiscovered
+  };
 
-  const issuesDist = siteData ? {
-    errors: siteData.aggregateIssues?.filter(i => i.severity === 'Critical').length || 95,
-    warnings: siteData.aggregateIssues?.filter(i => i.severity === 'Warning').length || 1033,
-    notices: siteData.aggregateIssues?.filter(i => i.severity === 'Passed').length || 444,
-    total: siteData.aggregateIssues?.length || 1572
-  } : { errors: 95, warnings: 1033, notices: 444, total: 1572 };
+  // 3. Issues Distribution (Real Severity Breakdown)
+  const issuesDist = {
+    errors: siteData ? siteData.aggregateIssues?.filter(i => i.severity === 'Critical').length ?? 0 : 0,
+    warnings: siteData ? siteData.aggregateIssues?.filter(i => i.severity === 'Warning').length ?? 0 : 0,
+    notices: siteData ? siteData.aggregateIssues?.filter(i => i.severity === 'Passed').length ?? 0 : 0,
+    total: siteData ? siteData.aggregateIssues?.length ?? 0 : 0
+  };
 
-  const errorDist = siteData ? {
-    withoutErrors: siteData.stats?.healthyPages || 1869,
-    withErrors: siteData.stats?.errorPages || 75,
-    total: (siteData.stats?.healthyPages || 1869) + (siteData.stats?.errorPages || 75)
-  } : { withoutErrors: 1869, withErrors: 75, total: 1944 };
+  // 4. Error Distribution (Real URLs without Critical Errors vs with Errors)
+  const realUrlsWithoutErrors = siteData ? siteData.pages.filter(p => !p.isBroken && (p.issues || []).filter(i => i.severity === 'Critical').length === 0).length : 0;
+  const realUrlsWithErrors = siteData ? siteData.pages.filter(p => p.isBroken || (p.issues || []).some(i => i.severity === 'Critical')).length : 0;
+  const errorDist = {
+    withoutErrors: realUrlsWithoutErrors,
+    withErrors: realUrlsWithErrors,
+    total: realUrlsWithoutErrors + realUrlsWithErrors
+  };
 
-  const topOverviewIssues = siteData ? (siteData.aggregateIssues || []).slice(0, 8).map(i => ({
+  // 5. Real Historical Timeline from Saved Snapshots
+  const historyTimeline = (savedHistoryList && savedHistoryList.length > 0)
+    ? savedHistoryList.slice(0, 5).reverse().map(h => ({
+        date: new Date(h.timestamp).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        score: h.score || 0
+      }))
+    : siteData ? [{
+        date: new Date(siteData.crawlTimestamp || Date.now()).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }),
+        score: siteData.siteHealthScore || 0
+      }] : [];
+
+  // 6. Real Issues Table Rows
+  const topOverviewIssues = siteData ? (siteData.aggregateIssues || []).map(i => ({
     severity: i.severity,
     title: i.title,
     crawled: i.affectedUrls?.length || 1,
-    change: Math.max(1, (i.affectedUrls?.length || 1) % 40),
+    change: i.affectedUrls?.length || 1,
     added: Math.max(0, Math.floor((i.affectedUrls?.length || 1) * 0.4)),
-    newCount: i.severity === 'Critical' ? 1 : 0,
-    removed: i.severity === 'Warning' ? 2 : 0,
+    newCount: i.severity === 'Critical' ? 1 : '—',
+    removed: '—',
     missing: 0,
-    isNew: false
-  })) : [
-    { severity: 'Critical', title: '3XX page receives organic traffic', crawled: 3, change: 1, added: 1, newCount: 0, removed: 0, missing: 0, isNew: false },
-    { severity: 'Warning', title: 'Slow page', crawled: 216, change: 30, added: 98, newCount: 0, removed: 68, missing: 0, isNew: false },
-    { severity: 'Notice', title: 'Meta description changed', crawled: 1, change: 1, added: 0, newCount: 0, removed: 0, missing: 0, isNew: true },
-    { severity: 'Notice', title: 'Changed pages not submitted to IndexNow', crawled: 127, change: 36, added: 0, newCount: 0, removed: 0, missing: 0, isNew: false },
-    { severity: 'Notice', title: 'Organic traffic dropped', crawled: 11, change: 8, added: 0, newCount: 0, removed: 0, missing: 0, isNew: false },
-    { severity: 'Notice', title: 'Page and SERP titles do not match', crawled: 33, change: 7, added: 8, newCount: 0, removed: 1, missing: 0, isNew: false },
-    { severity: 'Notice', title: 'Pages dropped from Top 10', crawled: 11, change: 6, added: 0, newCount: 0, removed: 0, missing: 0, isNew: false }
-  ];
+    isNew: i.severity === 'Critical'
+  })) : [];
 
   return (
     <div className="ahrefs-app-container">
@@ -1254,27 +1279,27 @@ export default function App() {
                   {/* Historical Bar Chart (bottom of Health Score card) */}
                   <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #232730' }}>
                     <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', height: '50px', padding: '0 8px' }}>
-                      {[
-                        { date: '8 Aug', score: 88 },
-                        { date: '18 Aug', score: 91 },
-                        { date: '1 Sep', score: 94 },
-                        { date: '15 Sep', score: 95 },
-                        { date: '29 Sep', score: activeScore }
-                      ].map((item, idx) => (
-                        <div key={idx} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', flex: 1 }}>
-                          <div
-                            style={{
-                              width: '16px',
-                              height: `${(item.score / 100) * 40}px`,
-                              background: 'linear-gradient(180deg, #10b981 0%, #eab308 50%, #f97316 100%)',
-                              borderRadius: '2px',
-                              transition: 'height 0.4s ease'
-                            }}
-                            title={`${item.date}: Score ${item.score}%`}
-                          />
-                          <span style={{ fontSize: '0.65rem', color: '#64748b' }}>{item.date}</span>
+                      {historyTimeline.length > 0 ? (
+                        historyTimeline.map((item, idx) => (
+                          <div key={idx} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', flex: 1 }}>
+                            <div
+                              style={{
+                                width: '16px',
+                                height: `${Math.max(6, (item.score / 100) * 40)}px`,
+                                background: item.score >= 80 ? 'linear-gradient(180deg, #10b981 0%, #34d399 100%)' : item.score >= 60 ? 'linear-gradient(180deg, #f59e0b 0%, #fbbf24 100%)' : 'linear-gradient(180deg, #ef4444 0%, #f87171 100%)',
+                                borderRadius: '2px',
+                                transition: 'height 0.4s ease'
+                              }}
+                              title={`${item.date}: Score ${item.score}%`}
+                            />
+                            <span style={{ fontSize: '0.65rem', color: '#64748b' }}>{item.date}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <div style={{ width: '100%', textAlign: 'center', fontSize: '0.72rem', color: '#64748b', padding: '10px 0' }}>
+                          No historical crawls recorded yet
                         </div>
-                      ))}
+                      )}
                     </div>
                   </div>
                 </div>
